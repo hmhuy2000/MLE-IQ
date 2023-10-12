@@ -61,7 +61,6 @@ def main(cfg: DictConfig):
                               sample_freq=args.expert.subsample_freq,
                               seed=args.seed + 42)
     print(f'--> Expert memory size: {expert_memory_replay.size()}')
-    
     online_memory_replay = Memory(REPLAY_MEMORY//2, args.seed+1)
     
     steps = 0

@@ -2,7 +2,9 @@
 
 env:
   name: HalfCheetah-v2
-  demo: HalfCheetah-v2_25.pkl
+  demo: halfcheetah_expert-v2.hdf5 
+  sub_optimal_demo: halfcheetah_full_replay-v2.hdf5
+  num_sub_optimal_demo: 1000
   # learn_steps: 1e5
   # eval_interval: 1e3
 

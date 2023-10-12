@@ -78,18 +78,8 @@ class ExpertDataset(Dataset):
 
     def __getitem__(self, i):
         traj_idx, i = self.get_idx[i]
-
-        states = self.trajectories["states"][traj_idx][i]
-        next_states = self.trajectories["next_states"][traj_idx][i]
-
-        # Rescale states and next_states to [0, 1] if are images
-        if isinstance(states, np.ndarray) and states.ndim == 3:
-            states = np.array(states) / 255.0
-        if isinstance(states, np.ndarray) and next_states.ndim == 3:
-            next_states = np.array(next_states) / 255.0
-
-        return (states,
-                next_states,
+        return (self.trajectories["states"][traj_idx][i],
+                self.trajectories["next_states"][traj_idx][i],
                 self.trajectories["actions"][traj_idx][i],
                 self.trajectories["rewards"][traj_idx][i],
                 self.trajectories["dones"][traj_idx][i])
@@ -110,20 +100,48 @@ def load_trajectories(expert_location: str,
         containing corresponding expert data attributes.
     """
     if os.path.isfile(expert_location):
-        # Load data from single file.
-        with open(expert_location, 'rb') as f:
-            trajs = read_file(expert_location, f)
+        if (expert_location.endswith("hdf5")):
+            with open(expert_location, 'rb') as f:
+                hdf_trajs = read_file(expert_location, f)
+            starts_timeout = np.where(np.array(hdf_trajs['timeouts'])>0)[0].tolist()
+            starts_done = np.where(np.array(hdf_trajs['terminals'])>0)[0].tolist()
+            starts = [-1]+starts_timeout+starts_done
+            starts = list(dict.fromkeys(starts))
+            starts.sort()
+            
+            rng = np.random.RandomState(seed)
+            perm = np.arange(len(starts)-1)
+            perm = rng.permutation(perm)
+            idx = perm[:num_trajectories]
+            trajs = {}
+            trajs['lengths'] = [starts[idx[i]+1] - starts[idx[i]] for i in range(len(idx))]
+            trajs['dones'] = [hdf_trajs['terminals'][starts[idx[i]]+1:starts[idx[i]+1]+1]
+                              for i in range(len(idx))]
+            trajs['rewards'] = [hdf_trajs['rewards'][starts[idx[i]]+1:starts[idx[i]+1]+1]
+                              for i in range(len(idx))]
+            trajs['states'] = [hdf_trajs['observations'][starts[idx[i]]+1:starts[idx[i]+1]+1]
+                              for i in range(len(idx))]
+            trajs['next_states'] = [hdf_trajs['next_observations'][starts[idx[i]]+1:starts[idx[i]+1]+1]
+                              for i in range(len(idx))]
+            trajs['actions'] = [hdf_trajs['actions'][starts[idx[i]]+1:starts[idx[i]+1]+1]
+                              for i in range(len(idx))]
+            reward_arr = [np.sum(trajs['rewards'][i]) for i in range(len(trajs['rewards']))]
+            print(f'expert: {expert_location}, {len(perm)} trajectories')
+            print(f'return: {np.mean(reward_arr)}, max:{np.max(reward_arr)}, min:{np.min(reward_arr)}')
+            print(f'mean episode length: {np.mean(trajs["lengths"])}')
+            return trajs  
+    
+        else:
+            with open(expert_location, 'rb') as f:
+                trajs = read_file(expert_location, f)
+            rng = np.random.RandomState(seed)
+            # Sample random `num_trajectories` experts.
+            perm = np.arange(len(trajs["states"]))
+            perm = rng.permutation(perm)
 
-        rng = np.random.RandomState(seed)
-        # Sample random `num_trajectories` experts.
-        perm = np.arange(len(trajs["states"]))
-        perm = rng.permutation(perm)
-
-        idx = perm[:num_trajectories]
-        for k, v in trajs.items():
-            # if not torch.is_tensor(v):
-            #     v = np.array(v)  # convert to numpy array
-            trajs[k] = [v[i] for i in idx]
+            idx = perm[:num_trajectories]
+            for k, v in trajs.items():
+                trajs[k] = [v[i] for i in idx]
 
     else:
         raise ValueError(f"{expert_location} is not a valid path")
@@ -144,6 +162,9 @@ def read_file(path: str, file_handle: IO[Any]) -> Dict[str, Any]:
         data = torch.load(file_handle)
     elif path.endswith("pkl"):
         data = pickle.load(file_handle)
+    elif path.endswith("hdf5"):
+        import h5py
+        data = h5py.File(path, 'r')
     elif path.endswith("npy"):
         data = np.load(file_handle, allow_pickle=True)
         if data.ndim == 0:

@@ -38,10 +38,11 @@ class Memory(object):
 
     def load(self, path, num_trajs, sample_freq, seed):
         # If path has no extension add npy
-        if not path.endswith("pkl"):
+        if not (path.endswith("pkl") or path.endswith("hdf5")):
             path += '.npy'
         data = ExpertDataset(path, num_trajs, sample_freq, seed)
-        # data = np.load(path, allow_pickle=True)
+        self.memory_size = data.__len__()
+        self.buffer = deque(maxlen=self.memory_size)
         for i in range(len(data)):
             self.add(data[i])
 
