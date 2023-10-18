@@ -2,7 +2,7 @@ from collections import deque
 import numpy as np
 import random
 import torch
-
+from tqdm import trange
 from dataset.expert_dataset import ExpertDataset
 
 
@@ -41,10 +41,15 @@ class Memory(object):
         if not (path.endswith("pkl") or path.endswith("hdf5")):
             path += '.npy'
         data = ExpertDataset(path, num_trajs, sample_freq, seed)
+        self.initial = data.get_initial()
         self.memory_size = data.__len__()
         self.buffer = deque(maxlen=self.memory_size)
         for i in range(len(data)):
             self.add(data[i])
+
+    def get_random_initial(self,device):
+        rand = random.randint(0, len(self.initial)-1)
+        return torch.as_tensor(self.initial[rand], dtype=torch.float, device=device).unsqueeze(0)
 
     def get_samples(self, batch_size, device):
         batch = self.sample(batch_size, False)

@@ -16,6 +16,7 @@ class SAC(object):
         self.device = torch.device(args.device)
         self.args = args
         agent_cfg = args.agent
+        agent_cfg.obs_dim = agent_cfg.latent_dim
         self.first_log = True
 
         self.critic_tau = agent_cfg.critic_tau
@@ -68,7 +69,8 @@ class SAC(object):
 
     def choose_action(self, state, sample=False):
         state = torch.FloatTensor(state).to(self.device).unsqueeze(0)
-        dist = self.actor(state)
+        latent = self.embed.state_function(state).detach()
+        dist = self.actor(latent)
         action = dist.sample() if sample else dist.mean
         # assert action.ndim == 2 and action.shape[0] == 1
         return action.detach().cpu().numpy()[0]

@@ -58,3 +58,4 @@ defaults:
   - method: iq
   - agent: softq
   - env: cartpole
+  - embed: state_action

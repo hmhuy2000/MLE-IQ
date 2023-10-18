@@ -10,6 +10,7 @@ def make_agent(env, args):
     ]
     # TODO: Simplify logic
     args.agent.obs_dim = obs_dim
+    args.agent.latent_dim = args.embed.latent_dim
     args.agent.action_dim = action_dim
     agent = SAC(obs_dim, action_dim, action_range, args.train.batch, args)
 

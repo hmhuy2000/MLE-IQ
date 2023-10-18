@@ -4,6 +4,7 @@ agent:
   name: sac
   _target_: agent.sac.SAC
   obs_dim: ??? # to be specified later
+  latent_dim: ??? # to be specified later
   action_dim: ??? # to be specified later
 
   critic_cfg: ${q_net}

@@ -2,8 +2,9 @@
 
 env:
   name: Ant-v2
-  # demo: Ant-v2_25.pkl
   demo: ant_expert-v2.hdf5
+  sub_optimal_demo: ant_expert-v2.hdf5
+  num_sub_optimal_demo: 1000
   # learn_steps: 1e5
   # eval_interval: 1e3
 
@@ -12,8 +13,9 @@ env:
 
   eps_steps: 100000
   eps_window: 10
-  learn_steps: 5e5
-  eval_interval: 5e3
+  learn_steps: 1e6
+  eval_interval: 1e4
+  log_interval: 5e3
 
 expert:
   demos: 1

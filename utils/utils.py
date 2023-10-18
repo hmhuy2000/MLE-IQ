@@ -96,9 +96,9 @@ def mlp(input_dim, hidden_dim, output_dim, hidden_depth, output_mod=None):
     if hidden_depth == 0:
         mods = [nn.Linear(input_dim, output_dim)]
     else:
-        mods = [nn.Linear(input_dim, hidden_dim), nn.ReLU(inplace=True)]
+        mods = [nn.Linear(input_dim, hidden_dim), nn.SiLU(inplace=True)]
         for i in range(hidden_depth - 1):
-            mods += [nn.Linear(hidden_dim, hidden_dim), nn.ReLU(inplace=True)]
+            mods += [nn.Linear(hidden_dim, hidden_dim), nn.SiLU(inplace=True)]
         mods.append(nn.Linear(hidden_dim, output_dim))
     if output_mod is not None:
         mods.append(output_mod)
@@ -128,6 +128,20 @@ def get_concat_samples(policy_batch, expert_batch, args):
 
     return batch_state, batch_next_state, batch_action, batch_reward, batch_done, is_expert
 
+def latent_concat_samples(online_obs,online_action,online_Q,online_V,online_next_V,online_done,
+                          expert_obs,expert_action,expert_Q,expert_V,expert_next_V,expert_done, args):
+
+    batch_obs = torch.cat([online_obs, expert_obs], dim=0)
+    batch_action = torch.cat([online_action, expert_action], dim=0)
+    batch_Q = torch.cat([online_Q, expert_Q], dim=0)
+    batch_V = torch.cat([online_V, expert_V], dim=0)
+    batch_next_V = torch.cat([online_next_V, expert_next_V], dim=0)
+    batch_done = torch.cat([online_done, expert_done], dim=0)
+    
+    is_expert = torch.cat([torch.zeros_like(online_Q, dtype=torch.bool),
+                           torch.ones_like(expert_Q, dtype=torch.bool)], dim=0)
+
+    return batch_obs,batch_action,batch_Q, batch_V, batch_next_V,batch_done, is_expert
 
 def save_state(tensor, path, num_states=5):
     """Show stack framed of images consisting the state"""

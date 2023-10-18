@@ -35,7 +35,7 @@ class ExpertDataset(Dataset):
             subsample_frequency:      Subsamples each trajectory at specified frequency of steps.
             deterministic:            If true, sample determinstic expert trajectories.
         """
-        all_trajectories = load_trajectories(expert_location, num_trajectories, seed)
+        all_trajectories,num_trajectories = load_trajectories(expert_location, num_trajectories, seed)
         self.trajectories = {}
 
         # Randomize start index of each trajectory for subsampling
@@ -56,6 +56,7 @@ class ExpertDataset(Dataset):
 
         self.i2traj_idx = {}
         self.length = self.trajectories["lengths"].sum().item()
+        self.trajectories['initial'] = all_trajectories['initial']
 
         del all_trajectories  # Not needed anymore
         traj_idx = 0
@@ -75,6 +76,9 @@ class ExpertDataset(Dataset):
     def __len__(self) -> int:
         """Return the length of the dataset."""
         return self.length
+
+    def get_initial(self):
+        return self.trajectories['initial']
 
     def __getitem__(self, i):
         traj_idx, i = self.get_idx[i]
@@ -112,8 +116,12 @@ def load_trajectories(expert_location: str,
             rng = np.random.RandomState(seed)
             perm = np.arange(len(starts)-1)
             perm = rng.permutation(perm)
+            if (num_trajectories == -1):
+                num_trajectories = len(perm)
             idx = perm[:num_trajectories]
             trajs = {}
+            trajs['initial'] = [hdf_trajs['observations'][starts[idx[i]]+1]
+                                for i in range(len(idx))]
             trajs['lengths'] = [starts[idx[i]+1] - starts[idx[i]] for i in range(len(idx))]
             trajs['dones'] = [hdf_trajs['terminals'][starts[idx[i]]+1:starts[idx[i]+1]+1]
                               for i in range(len(idx))]
@@ -129,7 +137,7 @@ def load_trajectories(expert_location: str,
             print(f'expert: {expert_location}, {len(perm)} trajectories')
             print(f'return: {np.mean(reward_arr)}, max:{np.max(reward_arr)}, min:{np.min(reward_arr)}')
             print(f'mean episode length: {np.mean(trajs["lengths"])}')
-            return trajs  
+            return trajs,num_trajectories
     
         else:
             with open(expert_location, 'rb') as f:
