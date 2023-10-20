@@ -57,6 +57,9 @@ class ExpertDataset(Dataset):
         self.i2traj_idx = {}
         self.length = self.trajectories["lengths"].sum().item()
         self.trajectories['initial'] = all_trajectories['initial']
+        self.trajectories['states'] = all_trajectories['states']
+        self.trajectories['next_states'] = all_trajectories['next_states']
+        self.trajectories['actions'] = all_trajectories['actions']
 
         del all_trajectories  # Not needed anymore
         traj_idx = 0

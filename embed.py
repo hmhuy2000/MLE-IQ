@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from torch.optim import Adam
 import hydra
 import utils.utils as utils
+from torch.optim.lr_scheduler import StepLR
 
 class embed(nn.Module):
     def __init__(self, obs_dim, action_dim, args):    
@@ -30,6 +31,7 @@ class embed(nn.Module):
                                     {'params': self.latent_action_function.parameters()},
                                     {'params': self.done_function.parameters()},                                    
                                     ], lr=args.embed.lr)
+        self.scheduler = StepLR(self.transition_optimizer, step_size=args.embed.train_steps//10, gamma=0.5)
         
     def save(self,save_path):
         if not os.path.exists(save_path):

@@ -19,3 +19,4 @@ embed:
   num_demos: ???
   log_interval: 500
   eval_interval: 5000
+  max_horizon: 10
