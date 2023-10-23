@@ -54,7 +54,7 @@ def main(cfg: DictConfig):
     action_dim = eval_env.action_space.shape[0]
     agent = make_agent(eval_env, args)
     agent.embed = embed(obs_dim=obs_dim,action_dim=action_dim,args=args).to(device)
-    agent.embed.load(f'/home/huy/codes/2023/MLE-IQ/pretrained/ant_expert-v2-{args.embed.latent_dim}')
+    agent.embed.load(f'/home/huy/codes/2023/MLE-IQ/pretrained/perfect-ant_expert-v2-128-16')
     agent.embed.eval()
     # Load expert data
     expert_memory_replay = Memory(REPLAY_MEMORY//2, args.seed)
@@ -74,10 +74,10 @@ def main(cfg: DictConfig):
 
     learn_steps = 0
     
-    def compute_energy(embed_1, embed_2):
-        squared_diff = torch.square(embed_1.unsqueeze(1) - embed_2.unsqueeze(0))
-        energies = torch.sum(-squared_diff, dim=-1)
-        return energies
+    # def compute_energy(embed_1, embed_2):
+    #     squared_diff = torch.square(embed_1.unsqueeze(1) - embed_2.unsqueeze(0))
+    #     energies = torch.sum(-squared_diff, dim=-1)
+    #     return energies
     
     # env = make_env(args)
     # env.seed(args.seed)
@@ -92,8 +92,9 @@ def main(cfg: DictConfig):
     #         energy = compute_energy(next_latent,actual_latent)
     #         pos = torch.diagonal(energy, dim1=-2, dim2=-1)
     #         neg = torch.logsumexp(energy, dim=-1)
-    #         print(pos.mean(),neg.mean())
-    #         raise
+    #         correct = (pos >= torch.max(energy, dim=-1).values).to(torch.float32)
+    #         print(pos.mean().item(),neg.mean().item(),correct.mean().item())
+    # raise
     
     traj_len = deque(maxlen = 100)
     length = 0
@@ -114,14 +115,14 @@ def main(cfg: DictConfig):
                 action = agent.actor(latent).mean
                 next_latent = agent.embed.latent_action_function(torch.cat((latent,action),dim=-1))
             length += 1
-            done = agent.embed.done_function(torch.cat((latent,next_latent),dim=-1))
-            done = (done[:, 1] < done[:, 0]).float()[0].item()
-            
-        
+            done = agent.embed.done_function(torch.cat((latent,next_latent),dim=-1)).detach().item()>0.5
+            if (length>=1000):
+                done = True
             online_memory_replay.add((latent.detach().cpu().numpy()[0],
                                     next_latent.detach().cpu().numpy()[0],
                                     action.detach().cpu().numpy()[0], 0, done))
             latent = next_latent
+            
         if online_memory_replay.size() <= INITIAL_MEMORY:
             continue
         

@@ -44,8 +44,9 @@ class ExpertDataset(Dataset):
         # Subsample expert trajectories with every `subsample_frequency` step.
         for k, v in all_trajectories.items():
             data = v
-
             if k != "lengths":
+                if (k=='initial'):
+                    continue
                 samples = []
                 for i in range(num_trajectories):
                     samples.append(data[i][0::subsample_frequency])

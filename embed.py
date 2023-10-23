@@ -23,7 +23,7 @@ class embed(nn.Module):
         self.latent_action_function = utils.mlp(self.embed_args.latent_dim + action_dim , self.embed_args.hidden_dim,
                                 self.embed_args.latent_dim, self.embed_args.hidden_depth)
         self.done_function = utils.mlp(self.embed_args.latent_dim + self.embed_args.latent_dim ,
-                                       self.embed_args.hidden_dim,2, self.embed_args.hidden_depth,
+                                       self.embed_args.hidden_dim,1, self.embed_args.hidden_depth,
                                        output_mod=nn.Sigmoid())
         self.transition_optimizer = Adam([
                                     {'params': self.state_action_function.parameters()},
@@ -31,7 +31,7 @@ class embed(nn.Module):
                                     {'params': self.latent_action_function.parameters()},
                                     {'params': self.done_function.parameters()},                                    
                                     ], lr=args.embed.lr)
-        self.scheduler = StepLR(self.transition_optimizer, step_size=args.embed.train_steps//10, gamma=0.5)
+        self.scheduler = StepLR(self.transition_optimizer, step_size=args.embed.train_steps//15, gamma=0.5)
         
     def save(self,save_path):
         if not os.path.exists(save_path):

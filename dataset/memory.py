@@ -84,7 +84,9 @@ class Memory(object):
         return batch_state, batch_next_state, batch_action, batch_reward, batch_done
 
     def sample_x_trans(self, batch_size,history):
-        indexes = np.random.choice(np.arange(len(self.buffer)-history + 1), size=batch_size, replace=False)
+        if batch_size > len(self.buffer)-history + 1:
+            batch_size = len(self.buffer)-history + 1
+        indexes = np.random.choice(np.arange(len(self.buffer)-history + 1), size=batch_size)
         return [[self.buffer[i+j] for i in indexes]
                                 for j in range(history)]
 
@@ -97,12 +99,12 @@ class Memory(object):
             batch_state, batch_next_state, batch_action, _, _ = zip(*batch)
             if (idx == 0):
                 initial_states = np.array(batch_state)
-                initial_states = torch.as_tensor(initial_states, dtype=torch.float, device=device)
+                initial_states = torch.tensor(initial_states, dtype=torch.float, device=device)
             if (idx == len(batch_ls)-1):
                 final_states = np.array(batch_next_state)
-                final_states = torch.as_tensor(final_states, dtype=torch.float, device=device)
+                final_states = torch.tensor(final_states, dtype=torch.float, device=device)
             batch_action = np.array(batch_action)
-            batch_action = torch.as_tensor(batch_action, dtype=torch.float, device=device)
+            batch_action = torch.tensor(batch_action, dtype=torch.float, device=device)
             action_ls.append(batch_action)
 
         return initial_states,final_states,action_ls

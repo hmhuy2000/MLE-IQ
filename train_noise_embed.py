@@ -47,14 +47,13 @@ def evaluate(model,dataset,device,args,id):
             obs, next_obs, action, _, done = dataset.get_samples(args.embed.eval_batch_size, device)
             next_embed = model.state_function(next_obs)
             obs_embed = model.state_function(obs)
-            done = torch.cat((done,1-done),dim=-1)
             latent_action_embed = model.latent_action_function(torch.cat((obs_embed,action),dim=-1))
             
             embed_2 = next_embed
             embed_3 = latent_action_embed
             pred_done = model.done_function(torch.cat((obs_embed,embed_3),dim=-1))
-            predicted_labels = (pred_done[:, 1] > pred_done[:, 0]).float()
-            true_labels = (done[:, 1] > done[:, 0]).float()
+            predicted_labels = (pred_done>0.5).float()
+            true_labels = done.float()
             accuracy = (predicted_labels == true_labels).float().mean()
 
             energies_2_3 = compute_energy(embed_2, embed_3)
@@ -128,7 +127,7 @@ def main(cfg: DictConfig):
     args.embed.action_dim = action_dim
     
     model = embed(obs_dim=obs_dim,action_dim=action_dim,args=args).to(device)
-    load_path = f'/home/huy/codes/2023/MLE-IQ/pretrained/noise-{args.env.demo.split(".")[0]}-{args.embed.latent_dim}-{args.embed.max_horizon}'
+    load_path = f'/home/huy/codes/2023/MLE-IQ/pretrained/perfect-{args.env.demo.split(".")[0]}-{args.embed.latent_dim}-{args.embed.max_horizon}'
     try:
         model.load(load_path)
         print(f'load model from {load_path}')
@@ -148,6 +147,13 @@ def main(cfg: DictConfig):
                               sample_freq=args.expert.subsample_freq,
                               seed=args.seed + 42,save_trajs=True)
     print(f'--> Random memory size: {random_memory_replay.size()}')
+    
+    expert_memory_replay = Memory(1, args.seed)
+    expert_memory_replay.load(hydra.utils.to_absolute_path(f'experts/{args.embed.eval_dataset}'),
+                              num_trajs=-1,
+                              sample_freq=args.expert.subsample_freq,
+                              seed=args.seed + 42,save_trajs=True)
+    print(f'--> Expert memory size: {expert_memory_replay.size()}')
     
     eval_memory_replay = Memory(1, args.seed)
     eval_memory_replay.load(hydra.utils.to_absolute_path(f'experts/{args.embed.eval_dataset}'),
@@ -172,29 +178,18 @@ def main(cfg: DictConfig):
     model.train()
     for iter in range(args.embed.train_steps):
         train_obs, train_next_obs, train_action, _, train_done = \
-            train_memory_replay.get_samples(args.embed.batch_size//2, device)
+            train_memory_replay.get_samples(int(args.embed.batch_size*2/5), device)
         random_obs, random_next_obs, random_action, _, random_done = \
-            random_memory_replay.get_samples(args.embed.batch_size//2, device)
-            
-        num_future = np.random.randint(2,args.embed.max_horizon + 1)
-        train_initial_state, train_final_state,train_action_ls = \
-                            train_memory_replay.get_samples_x_trans(args.embed.batch_size//2,num_future, device)
-        random_initial_state,random_final_state,random_action_ls = \
-                            random_memory_replay.get_samples_x_trans(args.embed.batch_size//2,num_future, device)
-            
-        obs = torch.cat((train_obs,random_obs),dim=0)
-        action = torch.cat((train_action,random_action),dim=0)
-        next_obs = torch.cat((train_next_obs,random_next_obs),dim=0)
-        _done = torch.cat((train_done,random_done),dim=0)
-        done = torch.cat((_done,1-_done),dim=-1)
-        
-        state_initial = torch.cat((train_initial_state,random_initial_state),dim=0)
-        state_final = torch.cat((train_final_state,random_final_state),dim=0)
-        action_ls = []
-        for (tmp_train_action,tmp_random_action) in zip(train_action_ls,random_action_ls):
-            tmp_action = torch.cat((tmp_train_action,tmp_random_action),dim=0)
-            action_ls.append(tmp_action)
-        #--------------------------------------------------#
+            random_memory_replay.get_samples(int(args.embed.batch_size*2/5), device)
+        expert_obs, expert_next_obs, expert_action, _, expert_done = \
+            expert_memory_replay.get_samples(int(args.embed.batch_size/5), device)
+
+        obs = torch.cat((train_obs,random_obs,expert_obs),dim=0)
+        action = torch.cat((train_action,random_action,expert_action),dim=0)
+        next_obs = torch.cat((train_next_obs,random_next_obs,expert_next_obs),dim=0)
+        _done = torch.cat((train_done,random_done,expert_done),dim=0)
+        weight_done = torch.cat((1-_done,_done),dim=-1)
+        done = _done
         
         this_embed = model.state_action_function(torch.cat((obs,action),dim=-1))
         next_embed = model.state_function(next_obs)
@@ -238,7 +233,37 @@ def main(cfg: DictConfig):
         model_loss_2_3 = -pos_loss_2_3 + neg_loss_2_3
         correct_2_3 = (pos_loss_2_3 >= torch.max(energies_2_3, dim=-1).values).to(torch.float32)
         
+        weight = torch.sum(weight_done*torch.tensor([1.0,100.0],dtype=torch.float).to(device),dim=-1,keepdim=True)
+        BCE_loss = nn.BCELoss(reduction='none')
+        done_loss = (BCE_loss(pred_done,done)*weight).mean()
+        loss = model_loss_1_2.mean() + model_loss_1_3.mean() + model_loss_2_3.mean() + done_loss
+        
+        arr_pos_1_2.append(pos_loss_1_2.mean().item())
+        arr_neg_1_2.append(neg_loss_1_2.mean().item())
+        arr_correct_1_2.append(correct_1_2.mean().item())
+        arr_pos_1_3.append(pos_loss_1_3.mean().item())
+        arr_neg_1_3.append(neg_loss_1_3.mean().item())
+        arr_correct_1_3.append(correct_1_3.mean().item())
+        arr_pos_2_3.append(pos_loss_2_3.mean().item())
+        arr_neg_2_3.append(neg_loss_2_3.mean().item())
+        arr_correct_2_3.append(correct_2_3.mean().item())
+    
         #--------------------------------------------------#
+        num_future = np.random.randint(2,args.embed.max_horizon + 1)
+        train_initial_state, train_final_state,train_action_ls = \
+                            train_memory_replay.get_samples_x_trans(int(args.embed.batch_size*2/5),num_future, device)
+        random_initial_state,random_final_state,random_action_ls = \
+                            random_memory_replay.get_samples_x_trans(int(args.embed.batch_size*2/5),num_future, device)
+        expert_initial_state,expert_final_state,expert_action_ls = \
+                            expert_memory_replay.get_samples_x_trans(int(args.embed.batch_size/5),num_future, device)
+            
+        state_initial = torch.cat((train_initial_state,random_initial_state,expert_initial_state),dim=0)
+        state_final = torch.cat((train_final_state,random_final_state,expert_final_state),dim=0)
+        action_ls = []
+        for (tmp_train_action,tmp_random_action,tmp_expert_action) in zip(train_action_ls,random_action_ls,expert_action_ls):
+            tmp_action = torch.cat((tmp_train_action,tmp_random_action,tmp_expert_action),dim=0)
+            action_ls.append(tmp_action)
+            
         with torch.no_grad():
             latent_initial = model.state_function(state_initial)
             latent_final = model.state_function(state_final)
@@ -263,36 +288,21 @@ def main(cfg: DictConfig):
         neg_loss_next = torch.logsumexp(energies_next, dim=-1)
         model_loss_next = -pos_loss_next + neg_loss_next
         correct_next = (pos_loss_next >= torch.max(energies_next, dim=-1).values).to(torch.float32)
-        
-        #--------------------------------------------------#
-        model.transition_optimizer.zero_grad()
-        BCE_loss = nn.BCELoss()
-        done_loss = BCE_loss(pred_done,done)
-        loss = model_loss_1_2.mean() + model_loss_1_3.mean() + model_loss_2_3.mean() + model_loss_next.mean() + done_loss
-        loss.backward()
-        model.transition_optimizer.step()
-        model.scheduler.step()
-        current_lr = model.scheduler.get_last_lr()[0]
-        
-        arr_pos_1_2.append(pos_loss_1_2.mean().item())
-        arr_neg_1_2.append(neg_loss_1_2.mean().item())
-        arr_correct_1_2.append(correct_1_2.mean().item())
-        
-        arr_pos_1_3.append(pos_loss_1_3.mean().item())
-        arr_neg_1_3.append(neg_loss_1_3.mean().item())
-        arr_correct_1_3.append(correct_1_3.mean().item())
-        
-        arr_pos_2_3.append(pos_loss_2_3.mean().item())
-        arr_neg_2_3.append(neg_loss_2_3.mean().item())
-        arr_correct_2_3.append(correct_2_3.mean().item())
+        loss += model_loss_next.mean()
         
         arr_pos_next.append(pos_loss_next.mean().item())
         arr_neg_next.append(neg_loss_next.mean().item())
         arr_correct_next.append(correct_next.mean().item())
         
+        #--------------------------------------------------#
+        model.transition_optimizer.zero_grad()
+        loss.backward()
+        model.transition_optimizer.step()
+        model.scheduler.step()
+        current_lr = model.scheduler.get_last_lr()[0]
         if (iter%args.embed.log_interval == 0):
-            predicted_labels = (pred_done[:, 1] > pred_done[:, 0]).float()
-            true_labels = (done[:, 1] > done[:, 0]).float()
+            predicted_labels = (pred_done>0.5).float()
+            true_labels = (done).float()
             accuracy = (predicted_labels == true_labels).float().mean()
             print(
                 f'[TRAIN] - {iter/args.embed.train_steps*100:.2f}% - lr={current_lr} :\t done={accuracy:.2f}| '
@@ -310,10 +320,9 @@ def main(cfg: DictConfig):
             evaluate(model=model,dataset=eval_memory_replay,device=device,
                      args=args,id='eval_memory_replay')
             model.train()
-            save_path = \
-                f'/home/huy/codes/2023/MLE-IQ/pretrained/noise-{args.env.demo.split(".")[0]}-{args.embed.latent_dim}-{args.embed.max_horizon}'
-            print(f'save at: {save_path}')
-            model.save(save_path)
+
+            print(f'save at: {load_path}')
+            model.save(load_path)
             print('-'*20)
     
 if __name__ == '__main__':
