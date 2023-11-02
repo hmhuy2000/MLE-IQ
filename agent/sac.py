@@ -17,6 +17,9 @@ class SAC(object):
         self.args = args
         agent_cfg = args.agent
         self.first_log = True
+        
+        self.lambd_0 = 1.0
+        self.lambd_freq = int(1e3)
 
         self.critic_tau = agent_cfg.critic_tau
         self.learn_temp = agent_cfg.learn_temp
@@ -140,9 +143,10 @@ class SAC(object):
         self.actor_optimizer.step()
 
         losses = {
-            'loss/actor': actor_loss.item(),
-            'actor_loss/target_entropy': self.target_entropy,
-            'actor_loss/entropy': -log_prob.mean().item()}
+            'actor_loss/total_loss': actor_loss.item(),
+            'update/entropy': -log_prob.mean().item(),
+            'update/log_alpha': self.log_alpha.item(),
+            }
 
         # self.actor.log(logger, step)
         if self.learn_temp:

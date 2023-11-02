@@ -29,8 +29,10 @@ def get_args(cfg: DictConfig):
 def main(cfg: DictConfig):
     args = get_args(cfg)
     
-    wandb.init(project='offline-mujoco', settings=wandb.Settings(_disable_stats=True), \
-        group=args.env.name,job_type=f'IQ-learn', name=f'{args.seed}', entity='hmhuy')
+    wandb.init(project='MLE-mujoco', settings=wandb.Settings(_disable_stats=True), \
+        group=args.env.name,
+        job_type=f'IQ-{args.env.demo.split(".")[0].split("/")[-1]}({args.expert.demos})',
+        name=f'{args.seed}', entity='hmhuy')
     print(OmegaConf.to_yaml(args))
     
     random.seed(args.seed)
@@ -190,12 +192,7 @@ def iq_update(self, policy_buffer, expert_buffer, step):
             losses.update(actor_alpha_losses)
 
     if step % self.critic_target_update_frequency == 0:
-        if self.args.train.soft_update:
-            soft_update(self.critic_net, self.critic_target_net,
-                        self.critic_tau)
-        else:
-            raise
-            hard_update(self.critic_net, self.critic_target_net)
+        soft_update(self.critic_net, self.critic_target_net, self.critic_tau)
     self.first_log=False
     
     return losses

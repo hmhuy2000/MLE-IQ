@@ -128,6 +128,33 @@ def get_concat_samples(policy_batch, expert_batch, args):
 
     return batch_state, batch_next_state, batch_action, batch_reward, batch_done, is_expert
 
+def get_concat_with_add_samples(policy_batch, add_batch, expert_batch, args):
+    online_batch_state, online_batch_next_state, online_batch_action, online_batch_reward, online_batch_done = policy_batch
+    add_batch_state, add_batch_next_state, add_batch_action, add_batch_reward, add_batch_done = add_batch
+    expert_batch_state, expert_batch_next_state, expert_batch_action, expert_batch_reward, expert_batch_done = expert_batch
+
+    batch_state = torch.cat([online_batch_state,add_batch_state, expert_batch_state], dim=0)
+    batch_next_state = torch.cat(
+        [online_batch_next_state,add_batch_next_state, expert_batch_next_state], dim=0)
+    batch_action = torch.cat([online_batch_action,add_batch_action, expert_batch_action], dim=0)
+    batch_reward = torch.cat([online_batch_reward,add_batch_reward, expert_batch_reward], dim=0)
+    batch_done = torch.cat([online_batch_done,add_batch_done, expert_batch_done], dim=0)
+    
+    is_pi = torch.cat([torch.ones_like(online_batch_reward, dtype=torch.bool),
+                           torch.zeros_like(add_batch_reward, dtype=torch.bool),
+                           torch.zeros_like(expert_batch_reward, dtype=torch.bool),
+                           ], dim=0)
+    is_add = torch.cat([torch.zeros_like(online_batch_reward, dtype=torch.bool),
+                           torch.ones_like(add_batch_reward, dtype=torch.bool),
+                           torch.zeros_like(expert_batch_reward, dtype=torch.bool),
+                           ], dim=0)
+    is_expert = torch.cat([torch.zeros_like(online_batch_reward, dtype=torch.bool),
+                           torch.zeros_like(add_batch_reward, dtype=torch.bool),
+                           torch.ones_like(expert_batch_reward, dtype=torch.bool),
+                           ], dim=0)
+
+    return batch_state, batch_next_state, batch_action, batch_reward, batch_done,\
+        is_pi, is_add, is_expert
 
 def save_state(tensor, path, num_states=5):
     """Show stack framed of images consisting the state"""
