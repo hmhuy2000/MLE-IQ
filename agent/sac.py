@@ -18,7 +18,9 @@ class SAC(object):
         agent_cfg = args.agent
         self.first_log = True
         
-        self.lambd_0 = 1.0
+        self.lambds = [0.0 for _ in range(len(args.env.lambda_coef))]
+        self.dataset_coefs = args.env.dataset_coef
+        self.lambd_coefs = args.env.lambda_coef
         self.lambd_freq = int(1e3)
 
         self.critic_tau = agent_cfg.critic_tau
@@ -144,7 +146,7 @@ class SAC(object):
 
         losses = {
             'actor_loss/total_loss': actor_loss.item(),
-            'update/entropy': -log_prob.mean().item(),
+            'update/log_prob': log_prob.mean().item(),
             'update/log_alpha': self.log_alpha.item(),
             }
 

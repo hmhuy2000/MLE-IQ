@@ -128,33 +128,43 @@ def get_concat_samples(policy_batch, expert_batch, args):
 
     return batch_state, batch_next_state, batch_action, batch_reward, batch_done, is_expert
 
-def get_concat_with_add_samples(policy_batch, add_batch, expert_batch, args):
+def get_concat_with_add_samples(policy_batch, add_batches, args):
     online_batch_state, online_batch_next_state, online_batch_action, online_batch_reward, online_batch_done = policy_batch
-    add_batch_state, add_batch_next_state, add_batch_action, add_batch_reward, add_batch_done = add_batch
-    expert_batch_state, expert_batch_next_state, expert_batch_action, expert_batch_reward, expert_batch_done = expert_batch
-
-    batch_state = torch.cat([online_batch_state,add_batch_state, expert_batch_state], dim=0)
-    batch_next_state = torch.cat(
-        [online_batch_next_state,add_batch_next_state, expert_batch_next_state], dim=0)
-    batch_action = torch.cat([online_batch_action,add_batch_action, expert_batch_action], dim=0)
-    batch_reward = torch.cat([online_batch_reward,add_batch_reward, expert_batch_reward], dim=0)
-    batch_done = torch.cat([online_batch_done,add_batch_done, expert_batch_done], dim=0)
     
-    is_pi = torch.cat([torch.ones_like(online_batch_reward, dtype=torch.bool),
-                           torch.zeros_like(add_batch_reward, dtype=torch.bool),
-                           torch.zeros_like(expert_batch_reward, dtype=torch.bool),
-                           ], dim=0)
-    is_add = torch.cat([torch.zeros_like(online_batch_reward, dtype=torch.bool),
-                           torch.ones_like(add_batch_reward, dtype=torch.bool),
-                           torch.zeros_like(expert_batch_reward, dtype=torch.bool),
-                           ], dim=0)
-    is_expert = torch.cat([torch.zeros_like(online_batch_reward, dtype=torch.bool),
-                           torch.zeros_like(add_batch_reward, dtype=torch.bool),
-                           torch.ones_like(expert_batch_reward, dtype=torch.bool),
-                           ], dim=0)
-
+    batch_state = [online_batch_state]
+    batch_next_state = [online_batch_next_state]
+    batch_action = [online_batch_action]
+    batch_reward  =[online_batch_reward]
+    batch_done = [online_batch_done]
+    for batch in add_batches:
+        add_batch_state, add_batch_next_state, add_batch_action, add_batch_reward, add_batch_done = batch
+        assert online_batch_reward.shape ==add_batch_reward.shape,NotImplementedError
+        batch_state.append(add_batch_state)
+        batch_next_state.append(add_batch_next_state)
+        batch_action.append(add_batch_action)
+        batch_reward.append(add_batch_reward)
+        batch_done.append(add_batch_done)
+    batch_state = torch.cat(batch_state, dim=0)
+    batch_next_state = torch.cat(batch_next_state, dim=0)
+    batch_action = torch.cat(batch_action, dim=0)
+    batch_reward = torch.cat(batch_reward, dim=0)
+    batch_done = torch.cat(batch_done, dim=0)
+    is_pi = [torch.ones_like(online_batch_reward, dtype=torch.bool)]
+    for _ in range(len(add_batches)):
+        is_pi.append(torch.zeros_like(online_batch_reward, dtype=torch.bool))
+    is_pi = torch.cat(is_pi, dim=0)
+    is_adds = []
+    for id in range(len(add_batches)):
+        is_add = [torch.zeros_like(online_batch_reward, dtype=torch.bool)]
+        for idx in range(len(add_batches)):
+            if (idx == id):
+                is_add.append(torch.ones_like(online_batch_reward, dtype=torch.bool))
+            else:
+                is_add.append(torch.zeros_like(online_batch_reward, dtype=torch.bool))
+        is_add = torch.cat(is_add,dim=0)
+        is_adds.append(is_add)
     return batch_state, batch_next_state, batch_action, batch_reward, batch_done,\
-        is_pi, is_add, is_expert
+        is_pi, is_adds
 
 def save_state(tensor, path, num_states=5):
     """Show stack framed of images consisting the state"""
@@ -164,6 +174,27 @@ def save_state(tensor, path, num_states=5):
     images = tensor.reshape(-1, 1, H, W).cpu()
     save_image(images, path, nrow=num_states)
     # make_grid(images)
+
+def concat_data(add_batches,reward_arr, args):
+    batch_state = []
+    batch_next_state = []
+    batch_action = []
+    batch_reward  =[]
+    batch_done = []
+    
+    for reward,batch in zip(reward_arr,add_batches):
+        add_batch_state, add_batch_next_state, add_batch_action, add_batch_reward, add_batch_done = batch
+        batch_state.append(add_batch_state)
+        batch_next_state.append(add_batch_next_state)
+        batch_action.append(add_batch_action)
+        batch_reward.append(torch.full_like(add_batch_reward,reward))
+        batch_done.append(add_batch_done)
+    batch_state = torch.cat(batch_state, dim=0)
+    batch_next_state = torch.cat(batch_next_state, dim=0)
+    batch_action = torch.cat(batch_action, dim=0)
+    batch_reward = torch.cat(batch_reward, dim=0)
+    batch_done = torch.cat(batch_done, dim=0)
+    return batch_state, batch_next_state, batch_action, batch_reward, batch_done
 
 
 def average_dicts(dict1, dict2):

@@ -5,6 +5,7 @@ Standalone IQ-Learn algorithm. See LICENSE for licensing terms.
 """
 import torch
 import torch.nn.functional as F
+import numpy as np
 
 
 # Full IQ-Learn objective with other divergences and options
@@ -117,52 +118,67 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
 def iq_with_add_loss(agent, current_Q, current_v, next_v, batch,step):
     args = agent.args
     gamma = agent.gamma
-    obs, next_obs, action, env_reward, done, is_pi, is_add, is_expert = batch
+    obs, next_obs, action, env_reward, done, is_pi, is_adds = batch
 
     loss_dict = {}
     loss_dict.update({
-        'value_function/expert_Q':current_Q[is_expert].mean().item(),
-        'value_function/add_Q':current_Q[is_add].mean().item(),
         'value_function/pi_Q':current_Q[is_pi].mean().item(),
-        'value_function/expert_v':current_v[is_expert].mean().item(),
-        'value_function/add_v':current_v[is_add].mean().item(),
         'value_function/pi_v':current_v[is_pi].mean().item(),
     })
-    # keep track of value of initial states
-    v0 = agent.getV(obs[is_expert.squeeze(1), ...]).mean()
-    loss_dict['value_loss/v0'] = v0.item()
-
-    y = (1 - done) * gamma * next_v
-    exp_reward = (current_Q - y)[is_expert]
-    add_reward = (current_Q - y)[is_add]
-    pi_reward = (current_Q - y)[is_pi]
-    
-    with torch.no_grad():
-        log_prob = agent.actor.get_log_prob(obs=obs,action=action)
-        if (log_prob[is_add].mean().item()>log_prob[is_expert].mean().item()):
-            agent.lambd_0 = max(agent.lambd_0*0.99995,0.05)
-        lamb = 1 - agent.lambd_0
-        exp_C = 1 + lamb
-        add_C = 1 - lamb
+    for id,is_add in enumerate(is_adds):
         loss_dict.update({
-            'update/expert_reward':(current_Q - y)[is_expert].mean().item(),
-            'update/add_reward':(current_Q - y)[is_add].mean().item(),
-            'update/pi_reward':(current_Q - y)[is_pi].mean().item(),
-            'update/expert_log_prob':log_prob[is_expert].mean().item(),
-            'update/add_log_prob':log_prob[is_add].mean().item(),
-            'update/pi_log_prob':log_prob[is_pi].mean().item(),
-            'reward/exp_reward':exp_reward.mean().item(),
-            'reward/add_reward':add_reward.mean().item(),
-            'reward/pi_reward':pi_reward.mean().item(),
-            'coefs/expert_C':exp_C,
-            'coefs/add_C':add_C,
+            f'value_function/add_{id}_Q':current_Q[is_add].mean().item(),
+            f'value_function/add_{id}_v':current_v[is_add].mean().item(),
         })
+    
+    # keep track of value of initial states
+    v0 = agent.getV(obs[is_adds[-1].squeeze(1), ...]).mean()
+    loss_dict['value_loss/v0'] = v0.item()
+    y = (1 - done) * gamma * next_v
 
-    loss = -exp_C * exp_reward.mean() -add_C * add_reward.mean()
+    pi_reward = (current_Q - y)[is_pi]
+    add_rewards = []
+    for id,is_add in enumerate(is_adds):
+        add_reward = (current_Q - y)[is_add]
+        add_rewards.append(add_reward)
+    with torch.no_grad():
+    #     log_prob = agent.actor.get_log_prob(obs=obs,action=action)
+        
+        # add_log_probs = []
+        # for id,is_add in enumerate(is_adds):
+        #     add_log_probs.append(log_prob[is_add].mean().item())
+        # max_idx = np.argmax(add_log_probs)
+        # for id in range(min(max_idx+1,len(agent.lambd_coefs))):
+        #     agent.lambds[id] = agent.lambds[id] + agent.lambd_coefs[id]
+        
+        C_values = []
+        for id in range(len(is_adds)):
+            C = 0 #agent.dataset_coefs[id]
+            tmp = 0.0
+            if (id>0):
+                tmp += agent.lambds[id-1]
+            if (id<len(is_adds)-1):
+                tmp -= agent.lambds[id]
+            C += torch.sigmoid(torch.tensor(tmp,dtype=torch.float)).item()
+            C_values.append(C)
+            loss_dict[f'coefs/C_{id}'] = C
+        
+        # loss_dict.update({
+        #     'log_prob/pi_log_prob':log_prob[is_pi].mean().item(),
+        #     'reward/pi_reward':pi_reward.mean().item(),
+        # })
+        for id,is_add in enumerate(is_adds):
+            loss_dict.update({
+                # f'log_prob/add_{id}_log_prob':log_prob[is_add].mean().item(),
+                f'reward/add_{id}_reward':add_rewards[id].mean().item(),
+            })
+    loss = 0
+    for C,r in zip(C_values,add_rewards):
+        loss += -C*r.mean()
     loss_dict['value_loss/reward_loss'] = loss.item()
-
     # calculate 2nd term for IQ loss, we show different sampling strategies
     if args.method.loss == "value_expert":
+        raise NotImplementedError
         if (agent.first_log):
             print('value loss: value expert (offline)')
         # sample using only expert states (works offline)
@@ -183,6 +199,7 @@ def iq_with_add_loss(agent, current_Q, current_v, next_v, batch,step):
         raise ValueError(f'This sampling method is not implemented: {args.method.type}')
 
     if args.method.div == "chi" or args.method.chi:  # TODO: Deprecate method.chi argument for method.div
+        raise NotImplementedError
         if (agent.first_log):
             print('regularize loss: chi2 expert (offline)')
         # Use χ2 divergence (calculate the regularization term for IQ loss using expert states) (works offline)

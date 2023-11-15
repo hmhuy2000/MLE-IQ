@@ -29,9 +29,15 @@ def get_args(cfg: DictConfig):
 def main(cfg: DictConfig):
     args = get_args(cfg)
     
-    wandb.init(project='MLE-mujoco', settings=wandb.Settings(_disable_stats=True), \
-        group=args.env.name,
-        job_type=f'IQ-{args.env.demo.split(".")[0].split("/")[-1]}({args.expert.demos})',
+    if (args.offline):
+        train_type = 'offline'
+    else:
+        train_type = 'online'
+    
+    run_name = f'IQ-{args.env.demo.split(".")[0].split("/")[-1]}({args.expert.demos})'
+    wandb.init(project=args.env.name, settings=wandb.Settings(_disable_stats=True), \
+        group=train_type,
+        job_type=run_name,
         name=f'{args.seed}', entity='hmhuy')
     print(OmegaConf.to_yaml(args))
     
@@ -61,7 +67,7 @@ def main(cfg: DictConfig):
     expert_memory_replay.load(hydra.utils.to_absolute_path(f'experts/{args.env.demo}'),
                               num_trajs=args.expert.demos,
                               sample_freq=args.expert.subsample_freq,
-                              seed=args.seed + 42)
+                              seed=args.seed + 43)
     print(f'--> Expert memory size: {expert_memory_replay.size()}')
     online_memory_replay = Memory(REPLAY_MEMORY//2, args.seed+1)
     

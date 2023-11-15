@@ -3,8 +3,10 @@
 env:
   name: Ant-v2
   demo: ant_expert-v2.hdf5
-  sub_optimal_demo: halfcheetah_medium-v2.hdf5
-  num_sub_optimal_demo: 50
+  sub_optimal_demo: Ant_medium-v2.hdf5
+  num_sub_optimal_demo: [50,5]
+  dataset_coef: [0.5,1.0]
+  lambda_coef: [0.99]
   # learn_steps: 1e5
   # eval_interval: 1e3
 
