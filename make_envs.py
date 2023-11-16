@@ -19,5 +19,4 @@ def make_env(args, monitor=True):
     if monitor:
         env = Monitor(env, "gym")
 
-    env = check_and_normalize_box_actions(env)
     return env

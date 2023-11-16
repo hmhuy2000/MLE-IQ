@@ -33,7 +33,7 @@ def main(cfg: DictConfig):
     run_name = f'Ours'
     for expert_dir,num_expert in zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo):
         run_name += f'-{expert_dir.split(".")[0].split("/")[-1]}({num_expert})'
-    wandb.init(project=f'offline-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
+    wandb.init(project=f'exp-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
         group='offline',
         job_type=run_name,
         name=f'{args.seed}', entity='hmhuy')
@@ -66,11 +66,11 @@ def main(cfg: DictConfig):
         expert_buffer.append(add_memory_replay)
         print(f'--> Add memory {id} size: {add_memory_replay.size()}')
     
-    reward_arr = np.arange(0.1,1.0,1.0/len(args.env.sub_optimal_demo))
-    reward_arr[-1] = 1.0
+    reward_arr = [0.1,0.3,0.5,1.0]
     print(f'rewards for datasets: {reward_arr}')
     
     best_eval_returns = -np.inf
+    best_learn_steps = None
     agent.policy_ls = expert_policy
     learn_steps = 0
 
@@ -84,17 +84,27 @@ def main(cfg: DictConfig):
         losses = agent.sqil_update(expert_buffer, learn_steps)
         info.update(losses)
         if learn_steps % args.env.eval_interval == 0:
-            eval_returns, eval_timesteps = evaluate(agent, eval_env, num_episodes=args.eval.eps)
-            returns = np.mean(eval_returns)
-            num_steps = np.mean(eval_timesteps)
-            learn_steps += 1  # To prevent repeated eval at timestep 0
-            if returns > best_eval_returns:
-                best_eval_returns = returns
-                print('new best eval',best_eval_returns)
-                
-            info['Eval/return'] = returns
-            info['Eval/std'] = np.std(eval_timesteps)
-            info['Eval/best'] = learn_steps
+            eval_returns, eval_timesteps = evaluate(agent, eval_env, num_episodes=50)
+            minimum = np.min(eval_returns)
+            maximum = np.max(eval_returns)
+            mean_value = np.mean(eval_returns)
+            std_value = np.std(eval_returns)            
+            Q1 = np.percentile(eval_returns, 25)
+            Q2 = np.percentile(eval_returns, 50)
+            Q3 = np.percentile(eval_returns, 75)    
+            if mean_value > best_eval_returns:
+                best_eval_returns = mean_value
+                best_learn_steps = learn_steps
+                print(f'Best eval: {best_eval_returns:.2f} ± {std_value:.2f}, step={best_learn_steps}')
+                        
+            info['Eval/mean'] = mean_value
+            info['Eval/std'] = std_value
+            info['Eval/min'] = minimum
+            info['Eval/max'] = maximum
+            info['Eval/Q1'] = Q1
+            info['Eval/Q2'] = Q2
+            info['Eval/Q3'] = Q3
+            info['Eval/best_step'] = best_learn_steps
             try:
                 wandb.log(info,step = learn_steps)
             except:
@@ -104,8 +114,8 @@ def main(cfg: DictConfig):
 
               
 def sqil_update_critic(self, add_batches,step):
-    reward_arr = np.arange(0.1,1.0,1.0/len(add_batches))
-    reward_arr[-1] = 1.0
+    reward_arr = [0.1,0.3,0.5,1.0]
+
     args = self.args
     batch = concat_data(add_batches,reward_arr, args)
     obs, next_obs, action,reward,done =batch
@@ -118,7 +128,17 @@ def sqil_update_critic(self, add_batches,step):
     current_Q = self.critic(obs, action)
     current_V = self.getV(obs)
     
-    value_loss = (current_V - (1 - done) * self.gamma * next_target_V).mean()
+    if (args.method.loss=='value'):
+        if (self.first_log):
+            print('[Critic]: use value loss')
+        value_loss = (current_V - (1 - done) * self.gamma * next_target_V).mean()
+    elif (args.method.loss=='v0'):
+        if (self.first_log):
+            print('[Critic]: use v0 loss')
+        value_loss = (1-self.gamma) * current_V.mean()
+    else:
+        raise NotImplementedError
+    
     mse_loss = F.mse_loss(current_Q, target_Q)
     critic_loss = mse_loss + value_loss
     loss_dict  ={
