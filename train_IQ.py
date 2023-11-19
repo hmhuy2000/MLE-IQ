@@ -30,7 +30,7 @@ def get_args(cfg: DictConfig):
 def main(cfg: DictConfig):
     args = get_args(cfg)
     
-    run_name = f'Ours (SQIL)'
+    run_name = f'Ours (IQ)'
     for expert_dir,num_expert in zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo):
         run_name += f'-{expert_dir.split(".")[0].split("/")[-1]}({num_expert})'
     wandb.init(project=f'test-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
@@ -121,9 +121,15 @@ def update_critic(self, add_batches,step):
         next_action, log_prob, _ = self.actor.sample(next_obs)
         target_next_V = self.critic_target(next_obs, next_action)  - self.alpha.detach() * log_prob
         y_next_V = (1 - done) * self.gamma * target_next_V
-        target_Q = reward + y_next_V
     current_Q1,current_Q2 = self.critic(obs, action,both=True)
     current_V = self.getV(obs)
+    
+    pred_reward_1 = current_Q1 - y_next_V
+    pred_reward_2 = current_Q2 - y_next_V
+    
+    reward_loss_1 = (-reward * pred_reward_1 + 1/2 * (pred_reward_1**2)).mean()
+    reward_loss_2 = (-reward * pred_reward_2 + 1/2 * (pred_reward_2**2)).mean()
+    reward_loss = (reward_loss_1 + reward_loss_2)/2
     
     if (args.method.loss=='value'):
         if (self.first_log):
@@ -136,13 +142,12 @@ def update_critic(self, add_batches,step):
     else:
         raise NotImplementedError
     
-    mse_loss = (F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q))/2
-    critic_loss = mse_loss + value_loss
+    critic_loss = value_loss + reward_loss
     loss_dict  ={
         'value/current_V':current_V.mean().item(),
         'loss/critic_loss':critic_loss.item(),
         'loss/value_loss':value_loss.item(),
-        'loss/mse_loss':mse_loss.item(),
+        'loss/reward_loss':reward_loss.item(),
     }
     if (step%args.env.eval_interval == 0):
         with torch.no_grad():

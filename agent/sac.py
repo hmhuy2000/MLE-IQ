@@ -107,7 +107,7 @@ class SAC(object):
 
         return losses
 
-    def update_critic(self, obs, action, reward, next_obs, done, logger, step):
+    def _update_critic(self, obs, action, reward, next_obs, done, logger, step):
 
         with torch.no_grad():
             next_action, log_prob, _ = self.actor.sample(next_obs)
