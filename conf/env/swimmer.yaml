@@ -1,9 +1,9 @@
 # @package _global_
 
 env:
-  name: Walker2d-v3
-  demo: Walker2d-v2_25.pkl
-  sub_optimal_demo: [Walker2d-v2.hdf5,Walker2d-v2.hdf5]
+  name: Swimmer-v3
+  demo: Swimmer-v2_25.pkl
+  sub_optimal_demo: [Swimmer-v2.hdf5,Swimmer-v2.hdf5]
   num_sub_optimal_demo: [50,5]
   dataset_coef: [0.5,1.0]
   lambda_coef: [0.99]

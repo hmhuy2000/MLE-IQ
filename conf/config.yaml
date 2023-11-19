@@ -19,6 +19,7 @@ train:
 expert:
   demos: 1
   subsample_freq: 1
+  reward_arr: [1.0]
 
 eval:
   policy: 

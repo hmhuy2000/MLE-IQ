@@ -33,7 +33,7 @@ def main(cfg: DictConfig):
     run_name = f'Ours'
     for expert_dir,num_expert in zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo):
         run_name += f'-{expert_dir.split(".")[0].split("/")[-1]}({num_expert})'
-    wandb.init(project=f'exp-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
+    wandb.init(project=f'MLE-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
         group='offline',
         job_type=run_name,
         name=f'{args.seed}', entity='hmhuy')
@@ -66,7 +66,7 @@ def main(cfg: DictConfig):
         expert_buffer.append(add_memory_replay)
         print(f'--> Add memory {id} size: {add_memory_replay.size()}')
     
-    reward_arr = [0.1,0.3,0.5,1.0]
+    reward_arr = args.expert.reward_arr
     print(f'rewards for datasets: {reward_arr}')
     
     best_eval_returns = -np.inf
@@ -114,9 +114,8 @@ def main(cfg: DictConfig):
 
               
 def sqil_update_critic(self, add_batches,step):
-    reward_arr = [0.1,0.3,0.5,1.0]
-
     args = self.args
+    reward_arr = args.expert.reward_arr
     batch = concat_data(add_batches,reward_arr, args)
     obs, next_obs, action,reward,done =batch
 
@@ -125,7 +124,7 @@ def sqil_update_critic(self, add_batches,step):
         next_target_Q = self.critic_target(next_obs, next_action)
         next_target_V = next_target_Q  - self.alpha.detach() * log_prob
         target_Q = reward + (1 - done) * self.gamma * next_target_V
-    current_Q = self.critic(obs, action)
+    current_Q1,current_Q2 = self.critic(obs, action,both=True)
     current_V = self.getV(obs)
     
     if (args.method.loss=='value'):
@@ -139,7 +138,7 @@ def sqil_update_critic(self, add_batches,step):
     else:
         raise NotImplementedError
     
-    mse_loss = F.mse_loss(current_Q, target_Q)
+    mse_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
     critic_loss = mse_loss + value_loss
     loss_dict  ={
         'value/current_V':current_V.mean().item(),
@@ -149,10 +148,22 @@ def sqil_update_critic(self, add_batches,step):
     }
     if (step%args.env.eval_interval == 0):
         with torch.no_grad():
+            pi_action, pi_prob, _ = self.actor.sample(obs)
+            pi_Q = self.critic(obs,pi_action)
+            pi_reward = pi_Q - (1 - done) * self.gamma * next_target_V
+            loss_dict[f'log_prob_pi'] = pi_prob.mean().item()
+            loss_dict[f'value/Q_pi'] = pi_Q.mean().item()
+            loss_dict[f'reward/reward_pi'] = pi_reward.mean().item()
             for id,batch in enumerate(add_batches):
-                b_obs,b_next_obs,b_action = batch[:3]
+                b_obs,b_next_obs,b_action,_,b_done = batch
+                b_next_action, b_log_prob, _ = self.actor.sample(b_next_obs)
+                b_next_target_V = self.critic_target(b_next_obs, b_next_action)  - self.alpha.detach() * b_log_prob
+                b_Q = self.critic(b_obs, b_action)
+                b_reward = b_Q - (1-b_done)*self.gamma * b_next_target_V
+
                 loss_dict[f'log_prob_{id}'] = self.actor.get_log_prob(b_obs, b_action).mean().item()
-                loss_dict[f'value/Q_{id}'] = self.critic(b_obs, b_action).mean().item()
+                loss_dict[f'value/Q_{id}'] = b_Q.mean().item()
+                loss_dict[f'reward/reward_{id}'] = b_reward.mean().item()
         
     self.critic_optimizer.zero_grad()
     critic_loss.backward()
