@@ -18,10 +18,7 @@ class SAC(object):
         agent_cfg = args.agent
         self.first_log = True
         
-        self.lambds = [0.0 for _ in range(len(args.env.lambda_coef))]
-        self.dataset_coefs = args.env.dataset_coef
-        self.lambd_coefs = args.env.lambda_coef
-        self.lambd_freq = int(1e3)
+        self.lambdas = [0.0 for _ in range(len(args.env.lambda_coef))]
 
         self.critic_tau = agent_cfg.critic_tau
         self.learn_temp = agent_cfg.learn_temp

@@ -56,7 +56,6 @@ def main(cfg: DictConfig):
     agent = make_agent(env, args)
 
     expert_buffer = []
-    expert_policy = []
     for id,(dir,num) in enumerate(zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo)):
         add_memory_replay = Memory(1, args.seed)
         add_memory_replay.load(hydra.utils.to_absolute_path(f'experts/{dir}'),
@@ -71,7 +70,6 @@ def main(cfg: DictConfig):
     
     best_eval_returns = -np.inf
     best_learn_steps = None
-    agent.policy_ls = expert_policy
     learn_steps = 0
 
     for iter in range(LEARN_STEPS):

@@ -10,15 +10,17 @@ import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
+from copy import deepcopy
 import wandb
 from torch import nn
 from omegaconf import DictConfig, OmegaConf
+from itertools import accumulate
 from tensorboardX import SummaryWriter
 from torch.optim import Adam
 from make_envs import make_env
 from agent import make_agent
 from dataset.memory import Memory
-from utils.utils import eval_mode,evaluate,soft_update,get_concat_with_add_samples
+from utils.utils import eval_mode,evaluate,soft_update,concat_data
 from iq_loss import iq_with_add_loss
 from BC_policies.actor import StateIndependentPolicy
 
@@ -27,38 +29,18 @@ def get_args(cfg: DictConfig):
     cfg.hydra_base_dir = os.getcwd()
     return cfg
 
-def train_BC(policy,dataset,device,target_log_prob,save_path,total_steps):
-    optim_actor = Adam(policy.parameters(), lr=1e-4)
-    arr_log = deque(maxlen=1000)
-    from tqdm import tqdm
-    pbar = tqdm(range(total_steps))
-    for iter in pbar:
-        policy_batch = dataset.get_samples(256, device)
-        obs, next_obs, action = policy_batch[:3]
-        log_prob = policy.evaluate_log_pi(obs,action)
-        loss = -target_log_prob*log_prob.mean() + 1/2 *(log_prob**2).mean()
-        arr_log.append(log_prob.mean().item())
-        optim_actor.zero_grad()
-        loss.backward(retain_graph=False)
-        optim_actor.step()
-        if (iter%1000 == 0):
-            pbar.set_description(f'{np.mean(arr_log):.3f}')
-    torch.save(policy.state_dict(), save_path)
-    return policy
-
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg: DictConfig):
     args = get_args(cfg)
     
-    run_name = f'new-MLE'
+    run_name = f'MLE-lag (both)'
     for expert_dir,num_expert in zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo):
         run_name += f'-{expert_dir.split(".")[0].split("/")[-1]}({num_expert})'
-    wandb.init(project='MLE-mujoco', settings=wandb.Settings(_disable_stats=True), \
-        group=args.env.name,
+    wandb.init(project=f'test-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
+        group='offline',
         job_type=run_name,
         name=f'{args.seed}', entity='hmhuy')
     print(OmegaConf.to_yaml(args))
-    
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -72,16 +54,10 @@ def main(cfg: DictConfig):
     eval_env = make_env(args)
     env.seed(args.seed)
     eval_env.seed(args.seed + 10)
-    REPLAY_MEMORY = int(args.env.replay_mem)
-    INITIAL_MEMORY = int(args.env.initial_mem)
-    EPISODE_STEPS = int(args.env.eps_steps)
-    EPISODE_WINDOW = int(args.env.eps_window)
     LEARN_STEPS = int(args.env.learn_steps)
-    INITIAL_STATES = 128
     agent = make_agent(env, args)
 
     expert_buffer = []
-    expert_policy = []
     for id,(dir,num) in enumerate(zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo)):
         add_memory_replay = Memory(1, args.seed)
         add_memory_replay.load(hydra.utils.to_absolute_path(f'experts/{dir}'),
@@ -89,171 +65,154 @@ def main(cfg: DictConfig):
                                 sample_freq=1,
                                 seed=args.seed + id*43)
         expert_buffer.append(add_memory_replay)
-        policy_path = f'/home/huy/codes/2023/MLE_codes/MLE-IQ/BC_policies/{dir.split(".")[0]}_{num}.pth'
-        policy = StateIndependentPolicy(
-                state_shape=env.observation_space.shape,
-                action_shape=env.action_space.shape,
-                hidden_units=[256,256],
-                hidden_activation=nn.Tanh(),
-            ).to(device)
-        if (num>=50 and os.path.isfile(policy_path)):
-            policy.load_state_dict(torch.load(policy_path))
-        else:
-            print(f'train BC for {policy_path}')
-            if (num>= 50):
-                total_steps=int(3e5)
-            else:
-                total_steps=int(1e5)
-            os.makedirs(f'/home/huy/codes/2023/MLE_codes/MLE-IQ/BC_policies/{dir.split("/")[0]}',exist_ok=True)
-            policy = train_BC(policy=policy,dataset=add_memory_replay,device=device,
-                              target_log_prob=env.action_space.shape[0],save_path=policy_path,
-                              total_steps=total_steps)
-        policy.eval()
-        expert_policy.append(policy)
-        policy_batch = add_memory_replay.get_samples(1000, device)
-        obs, next_obs, action = policy_batch[:3]
-        log_prob = policy.evaluate_log_pi(obs,action)
         print(f'--> Add memory {id} size: {add_memory_replay.size()}')
-        print(f'--> policy {id} log_prob: {log_prob.mean().item():.3f}')
-        print()
-    online_memory_replay = Memory(REPLAY_MEMORY//2, args.seed+1)
-    steps = 0
-    steps_window = deque(maxlen=EPISODE_WINDOW) 
-    rewards_window = deque(maxlen=EPISODE_WINDOW)
-    best_eval_returns = -np.inf
-    agent.policy_ls = expert_policy
     learn_steps = 0
-    episode_reward = 0
+    best_eval_returns = -np.inf
+    best_learn_steps = None
     
-    for epoch in count():
-        state = env.reset()
-        episode_reward = 0
-        done = False
-        for episode_step in range(EPISODE_STEPS):
-            info = {}
-            with eval_mode(agent):
-                action = agent.choose_action(state, sample=True)
-            next_state, reward, done, _ = env.step(action)
-            episode_reward += reward
-            
-            done_no_lim = done
-            if str(env.__class__.__name__).find('TimeLimit') >= 0 and episode_step + 1 == env._max_episode_steps:
-                done_no_lim = 0
-            online_memory_replay.add((state, next_state, action, reward, done_no_lim))
-            
-            if online_memory_replay.size() > INITIAL_MEMORY:
-                learn_steps += 1
-                if learn_steps == LEARN_STEPS:
-                    print('Finished!')
-                    return
-
-                ######
-                # IQ-Learn Modification
-                agent.iq_update = types.MethodType(iq_update, agent)
-                agent.iq_update_critic = types.MethodType(iq_update_critic, agent)
-                losses = agent.iq_update(online_memory_replay,
-                                         expert_buffer, learn_steps)
-                info.update(losses)
-                ######
-
-            if learn_steps % args.env.eval_interval == 0:
-                eval_returns, eval_timesteps = evaluate(agent, eval_env, num_episodes=args.eval.eps)
-                returns = np.mean(eval_returns)
-                num_steps = np.mean(eval_timesteps)
-                learn_steps += 1  # To prevent repeated eval at timestep 0
-                print('EVAL\tEp {}\tAverage reward: {:.2f}\t'.format(epoch, returns))
-
-                if returns > best_eval_returns:
-                    best_eval_returns = returns
-                    save(agent, epoch, args, output_dir='results_best')
-                info['Eval/return'] = returns
-                info['Eval/num_steps'] = num_steps
-                info['Train/return'] = np.mean(rewards_window)
-                info['Train/num_steps'] = np.mean(steps_window)
-                try:
-                    wandb.log(info,step = learn_steps)
-                except:
-                    print(info)
-            elif learn_steps % args.env.log_interval == 0:
-                info['Train/return'] = np.mean(rewards_window)
-                info['Train/num_steps'] = np.mean(steps_window)
-                try:
-                    wandb.log(info,step = learn_steps)
-                except:
-                    print(info)
-
-            if (done):
-                break
-            state = next_state
-        rewards_window.append(episode_reward)
-        steps_window.append(episode_step)
-        print('TRAIN\tEp {}\tAverage reward: {:.2f}\t'.format(epoch, np.mean(rewards_window)))
-        save(agent, epoch, args, output_dir='results')
+    for iter in range(LEARN_STEPS):
+        info = {}
+        if learn_steps == LEARN_STEPS:
+            print('Finished!')
+            return
+        agent.update = types.MethodType(update, agent)
+        agent.update_critic = types.MethodType(update_critic, agent)
+        losses = agent.update(expert_buffer, learn_steps)
+        info.update(losses)
+        if learn_steps % args.env.eval_interval == 0:
+            eval_returns, eval_timesteps = evaluate(agent, eval_env, num_episodes=50)
+            minimum = np.min(eval_returns)
+            maximum = np.max(eval_returns)
+            mean_value = np.mean(eval_returns)
+            std_value = np.std(eval_returns)            
+            Q1 = np.percentile(eval_returns, 25)
+            Q2 = np.percentile(eval_returns, 50)
+            Q3 = np.percentile(eval_returns, 75)    
+            if mean_value > best_eval_returns:
+                best_eval_returns = mean_value
+                best_learn_steps = learn_steps
+                print(f'Best eval: {best_eval_returns:.2f} ± {std_value:.2f}, step={best_learn_steps}')
+                        
+            info['Eval/mean'] = mean_value
+            info['Eval/std'] = std_value
+            info['Eval/min'] = minimum
+            info['Eval/max'] = maximum
+            info['Eval/Q1'] = Q1
+            info['Eval/Q2'] = Q2
+            info['Eval/Q3'] = Q3
+            info['Eval/best_step'] = best_learn_steps
+            try:
+                wandb.log(info,step = learn_steps)
+            except:
+                print(info)
+        learn_steps += 1
               
-def iq_update_critic(self, policy_batch, add_batches,step):
+def update_critic(self, add_batches,step):
     args = self.args
-    batch = get_concat_with_add_samples(policy_batch, add_batches, args)
-    obs, next_obs, action = batch[0:3]
+    loss_dict = {}
+    reward_arr = []
+    for id in range(len(args.expert.reward_arr)):
+        r = 0.0
+        if (id>0):
+            r += self.lambdas[id-1]
+        if (id<len(self.lambdas)):
+            r -= self.lambdas[id]
+        r = torch.sigmoid(torch.tensor(r)).item()
+        loss_dict[f'target_reward/reward_{id}'] = r
+        reward_arr.append(r)
+    batch = concat_data(add_batches,reward_arr, args)
+    obs, next_obs, action,reward,done =batch
 
-    agent = self
+    with torch.no_grad():
+        next_action, log_prob, _ = self.actor.sample(next_obs)
+        target_next_V = self.critic_target(next_obs, next_action)  - self.alpha.detach() * log_prob
+        y_next_V = (1 - done) * self.gamma * target_next_V
+        target_Q = reward + y_next_V
+    current_Q1,current_Q2 = self.critic(obs, action,both=True)
     current_V = self.getV(obs)
-    if args.train.use_target:
-        with torch.no_grad():
-            next_V = self.get_targetV(next_obs)
+    
+    pred_reward_1 = current_Q1 - y_next_V
+    pred_reward_2 = current_Q2 - y_next_V
+    
+    reward_loss_1 = (-reward * pred_reward_1 + 1/2 * (pred_reward_1**2)).mean()
+    reward_loss_2 = (-reward * pred_reward_2 + 1/2 * (pred_reward_2**2)).mean()
+    reward_loss = (reward_loss_1 + reward_loss_2)/2
+    
+    if (args.method.loss=='value'):
+        if (self.first_log):
+            print('[Critic]: use value loss')
+        value_loss = (current_V - y_next_V).mean()
+    elif (args.method.loss=='v0'):
+        if (self.first_log):
+            print('[Critic]: use v0 loss')
+        value_loss = (1-self.gamma) * current_V.mean()
     else:
-        next_V = self.getV(next_obs)
-
-    if "DoubleQ" in self.args.q_net._target_:
         raise NotImplementedError
-    else:
-        current_Q = self.critic(obs, action)
-        critic_loss, loss_dict = iq_with_add_loss(agent, current_Q, current_V, next_V, batch,step)
-
+    
+    mse_loss = (F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q))/2
+    critic_loss = mse_loss + value_loss   + reward_loss
     self.critic_optimizer.zero_grad()
     critic_loss.backward()
     self.critic_optimizer.step()
+    
+    Q_dif_ls = []
+    is_adds = []    
+    with torch.no_grad():
+        for id in range(len(add_batches)):
+            _, _, _, add_batch_reward, _ = add_batches[id]
+            is_add = []
+            for idx in range(len(add_batches)):
+                if (idx == id):
+                    is_add.append(torch.ones_like(add_batch_reward, dtype=torch.bool))
+                else:
+                    is_add.append(torch.zeros_like(add_batch_reward, dtype=torch.bool))
+            is_add = torch.cat(is_add,dim=0)
+            is_adds.append(is_add)
+        
+        pi_action, pi_prob, _ = self.actor.sample(obs)
+        pi_Q1,pi_Q2 = self.critic(obs,pi_action,both=True)
+        pi_Q = (pi_Q1+pi_Q2)/2    
+        b_Q = (current_Q1+current_Q2)/2
+        b_reward = b_Q - y_next_V
+        Q_dif = pi_Q - b_Q
+        for id,is_add in enumerate(is_adds):
+            loss_dict.update({
+                f'value/pi_Q_{id}':pi_Q[is_add].mean().item(),
+                f'value/Q_{id}':b_Q[is_add].mean().item(),
+                f'value/Q_dif_{id}':Q_dif[is_add].mean().item(),
+                f'reward/reward_{id}':b_reward[is_add].mean().item(),
+            })
+            Q_dif_ls.append(Q_dif[is_add].mean().item())
+    
+    for max_idx in range(len(reward_arr)-1, -1, -1):
+        if (Q_dif_ls[max_idx]>0):
+            break
+    lambda_coef = list(accumulate(deepcopy(self.args.env.lambda_coef)))
+    for id in range(min(len(lambda_coef),max_idx+1)):
+        self.lambdas[id] += lambda_coef[id]
+    loss_dict.update({
+        'value/current_V':current_V.mean().item(),
+        'loss/critic_loss':critic_loss.item(),
+        'loss/value_loss':value_loss.item(),
+        'loss/mse_loss':mse_loss.item(),
+        'loss/reward_loss':reward_loss.item(),
+        'target_reward/max_idx':max_idx
+    })
     return loss_dict
 
-def iq_update(self, policy_buffer, buffers, step):
-    policy_batch = policy_buffer.get_samples(self.batch_size, self.device)
+def update(self, buffers, step):
     add_batches = []
     for id,add_buffer in enumerate(buffers):
         batch = add_buffer.get_samples(self.batch_size, self.device)
         add_batches.append(batch)
-    losses = self.iq_update_critic(policy_batch ,add_batches,step)
-    
-    with torch.no_grad():
-        new_add_log_probs = []
-        obs = policy_batch[0]
-        agent_actions = self.actor(obs).sample()
-        for id,policy in enumerate(self.policy_ls):
-            new_log_prob = policy.evaluate_log_pi(obs,agent_actions)
-            new_add_log_probs.append(new_log_prob.mean().item())
-            losses.update({
-                f'log_prob/add_{id}_log_prob':new_log_prob.mean().item(),
-            })
-        max_idx = np.argmax(new_add_log_probs)
-        for id in range(min(max_idx+1,len(self.lambd_coefs))):
-            self.lambds[id] = self.lambds[id] + self.lambd_coefs[id]
-        losses.update({
-            'update/max_idx':max_idx,
-        })
-        
+    losses = self.update_critic(add_batches,step)
+
     if self.actor and step % self.actor_update_frequency == 0:
-        if self.args.offline:
-            if (self.first_log):
-                print('actor training: only data (offline)')
-            raise NotImplementedError
-        else:
-            if (self.first_log):
-                print('actor training: both data (online)')
-            add_obs = []
-            for id,batch in enumerate(add_batches):
-                if (id<max_idx):
-                    continue
-                add_obs.append(batch[0])
-            add_obs = torch.cat(add_obs,dim=0)
-            obs = torch.cat([policy_batch[0], add_obs], dim=0)
+        add_obs = []
+        for id,batch in enumerate(add_batches):
+            add_obs.append(batch[0])
+        obs = torch.cat(add_obs,dim=0)
+        
         if self.args.num_actor_updates: 
             for i in range(self.args.num_actor_updates):
                 actor_alpha_losses = self.update_actor_and_alpha(obs)
