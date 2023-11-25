@@ -33,7 +33,7 @@ def main(cfg: DictConfig):
     run_name = f'Ours (SQIL)'
     for expert_dir,num_expert in zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo):
         run_name += f'-{expert_dir.split(".")[0].split("/")[-1]}({num_expert})'
-    wandb.init(project=f'test-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
+    wandb.init(project=f'MLE-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
         group='offline',
         job_type=run_name,
         name=f'{args.seed}', entity='hmhuy')
@@ -56,7 +56,6 @@ def main(cfg: DictConfig):
     agent = make_agent(env, args)
 
     expert_buffer = []
-    expert_policy = []
     for id,(dir,num) in enumerate(zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo)):
         add_memory_replay = Memory(1, args.seed)
         add_memory_replay.load(hydra.utils.to_absolute_path(f'experts/{dir}'),
@@ -71,7 +70,6 @@ def main(cfg: DictConfig):
     
     best_eval_returns = -np.inf
     best_learn_steps = None
-    agent.policy_ls = expert_policy
     learn_steps = 0
 
     for iter in range(LEARN_STEPS):
@@ -125,6 +123,13 @@ def update_critic(self, add_batches,step):
     current_Q1,current_Q2 = self.critic(obs, action,both=True)
     current_V = self.getV(obs)
     
+    pred_reward_1 = current_Q1 - y_next_V
+    pred_reward_2 = current_Q2 - y_next_V
+    
+    reward_loss_1 = (-reward * pred_reward_1 + 1/2 * (pred_reward_1**2)).mean()
+    reward_loss_2 = (-reward * pred_reward_2 + 1/2 * (pred_reward_2**2)).mean()
+    reward_loss = (reward_loss_1 + reward_loss_2)/2
+    
     if (args.method.loss=='value'):
         if (self.first_log):
             print('[Critic]: use value loss')
@@ -143,6 +148,7 @@ def update_critic(self, add_batches,step):
         'loss/critic_loss':critic_loss.item(),
         'loss/value_loss':value_loss.item(),
         'loss/mse_loss':mse_loss.item(),
+        'loss/reward_loss':reward_loss.item(),
     }
     if (step%args.env.eval_interval == 0):
         with torch.no_grad():

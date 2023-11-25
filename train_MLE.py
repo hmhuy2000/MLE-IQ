@@ -33,7 +33,7 @@ def get_args(cfg: DictConfig):
 def main(cfg: DictConfig):
     args = get_args(cfg)
     
-    run_name = f'MLE-lag (both)'
+    run_name = f'MLE (both)'
     for expert_dir,num_expert in zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo):
         run_name += f'-{expert_dir.split(".")[0].split("/")[-1]}({num_expert})'
     wandb.init(project=f'test-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
@@ -117,7 +117,7 @@ def update_critic(self, add_batches,step):
             r += self.lambdas[id-1]
         if (id<len(self.lambdas)):
             r -= self.lambdas[id]
-        r = torch.sigmoid(torch.tensor(r)).item()
+        r = 0.4 + torch.sigmoid(torch.tensor(r)).item()
         loss_dict[f'target_reward/reward_{id}'] = r
         reward_arr.append(r)
     batch = concat_data(add_batches,reward_arr, args)

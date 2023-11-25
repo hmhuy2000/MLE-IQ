@@ -33,7 +33,7 @@ def main(cfg: DictConfig):
     run_name = f'Ours (IQ)'
     for expert_dir,num_expert in zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo):
         run_name += f'-{expert_dir.split(".")[0].split("/")[-1]}({num_expert})'
-    wandb.init(project=f'test-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
+    wandb.init(project=f'MLE-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
         group='offline',
         job_type=run_name,
         name=f'{args.seed}', entity='hmhuy')
@@ -56,7 +56,6 @@ def main(cfg: DictConfig):
     agent = make_agent(env, args)
 
     expert_buffer = []
-    expert_policy = []
     for id,(dir,num) in enumerate(zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo)):
         add_memory_replay = Memory(1, args.seed)
         add_memory_replay.load(hydra.utils.to_absolute_path(f'experts/{dir}'),
@@ -71,7 +70,6 @@ def main(cfg: DictConfig):
     
     best_eval_returns = -np.inf
     best_learn_steps = None
-    agent.policy_ls = expert_policy
     learn_steps = 0
 
     for iter in range(LEARN_STEPS):
@@ -121,6 +119,7 @@ def update_critic(self, add_batches,step):
         next_action, log_prob, _ = self.actor.sample(next_obs)
         target_next_V = self.critic_target(next_obs, next_action)  - self.alpha.detach() * log_prob
         y_next_V = (1 - done) * self.gamma * target_next_V
+        target_Q = reward + y_next_V
     current_Q1,current_Q2 = self.critic(obs, action,both=True)
     current_V = self.getV(obs)
     
@@ -142,11 +141,13 @@ def update_critic(self, add_batches,step):
     else:
         raise NotImplementedError
     
+    mse_loss = (F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q))/2
     critic_loss = value_loss + reward_loss
     loss_dict  ={
         'value/current_V':current_V.mean().item(),
         'loss/critic_loss':critic_loss.item(),
         'loss/value_loss':value_loss.item(),
+        'loss/mse_loss':mse_loss.item(),
         'loss/reward_loss':reward_loss.item(),
     }
     if (step%args.env.eval_interval == 0):

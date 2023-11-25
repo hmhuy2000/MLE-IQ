@@ -33,7 +33,7 @@ def main(cfg: DictConfig):
     run_name = f'Ours (Both)'
     for expert_dir,num_expert in zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo):
         run_name += f'-{expert_dir.split(".")[0].split("/")[-1]}({num_expert})'
-    wandb.init(project=f'test-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
+    wandb.init(project=f'MLE-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
         group='offline',
         job_type=run_name,
         name=f'{args.seed}', entity='hmhuy')

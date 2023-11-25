@@ -35,54 +35,19 @@ class ExpertDataset(Dataset):
             subsample_frequency:      Subsamples each trajectory at specified frequency of steps.
             deterministic:            If true, sample determinstic expert trajectories.
         """
-        all_trajectories = load_trajectories(expert_location, num_trajectories, seed)
-        self.trajectories = {}
-
-        # Randomize start index of each trajectory for subsampling
-        # start_idx = torch.randint(0, subsample_frequency, size=(num_trajectories,)).long()
-
-        # Subsample expert trajectories with every `subsample_frequency` step.
-        for k, v in all_trajectories.items():
-            data = v
-
-            if k != "lengths":
-                samples = []
-                for i in range(num_trajectories):
-                    samples.append(data[i][0::subsample_frequency])
-                self.trajectories[k] = samples
-            else:
-                # Adjust the length of trajectory after subsampling
-                self.trajectories[k] = np.array(data) // subsample_frequency
-
-        self.i2traj_idx = {}
-        self.length = self.trajectories["lengths"].sum().item()
-
-        del all_trajectories  # Not needed anymore
-        traj_idx = 0
-        i = 0
-
-        # Convert flattened index i to trajectory indx and offset within trajectory
-        self.get_idx = []
-
-        for _j in range(self.length):
-            while self.trajectories["lengths"][traj_idx].item() <= i:
-                i -= self.trajectories["lengths"][traj_idx].item()
-                traj_idx += 1
-
-            self.get_idx.append((traj_idx, i))
-            i += 1
+        self.all_trajectories = load_trajectories(expert_location, num_trajectories, seed)
+        self.length = self.all_trajectories['states'].shape[0]
 
     def __len__(self) -> int:
         """Return the length of the dataset."""
         return self.length
 
     def __getitem__(self, i):
-        traj_idx, i = self.get_idx[i]
-        return (self.trajectories["states"][traj_idx][i],
-                self.trajectories["next_states"][traj_idx][i],
-                self.trajectories["actions"][traj_idx][i],
-                self.trajectories["rewards"][traj_idx][i],
-                self.trajectories["dones"][traj_idx][i])
+        return (self.all_trajectories['states'][i],
+                self.all_trajectories['next_states'][i],
+                self.all_trajectories['actions'][i],
+                self.all_trajectories['rewards'][i],
+                self.all_trajectories['dones'][i])
 
 
 def load_trajectories(expert_location: str,
@@ -99,52 +64,55 @@ def load_trajectories(expert_location: str,
         Dict containing keys {"states", "lengths"} and optionally {"actions", "rewards"} with values
         containing corresponding expert data attributes.
     """
-    if os.path.isfile(expert_location):
-        if (expert_location.endswith("hdf5")):
-            with open(expert_location, 'rb') as f:
-                hdf_trajs = read_file(expert_location, f)
-            starts_timeout = np.where(np.array(hdf_trajs['timeouts'])>0)[0].tolist()
-            starts_done = np.where(np.array(hdf_trajs['terminals'])>0)[0].tolist()
-            starts = [-1]+starts_timeout+starts_done
-            starts = list(dict.fromkeys(starts))
-            starts.sort()
-            
-            rng = np.random.RandomState(seed)
-            perm = np.arange(len(starts)-1)
-            perm = rng.permutation(perm)
-            idx = perm[:num_trajectories]
-            trajs = {}
-            trajs['lengths'] = [starts[idx[i]+1] - starts[idx[i]] for i in range(len(idx))]
-            trajs['dones'] = [hdf_trajs['terminals'][starts[idx[i]]+1:starts[idx[i]+1]+1]
-                              for i in range(len(idx))]
-            trajs['rewards'] = [hdf_trajs['rewards'][starts[idx[i]]+1:starts[idx[i]+1]+1]
-                              for i in range(len(idx))]
-            trajs['states'] = [hdf_trajs['observations'][starts[idx[i]]+1:starts[idx[i]+1]+1]
-                              for i in range(len(idx))]
-            trajs['next_states'] = [hdf_trajs['next_observations'][starts[idx[i]]+1:starts[idx[i]+1]+1]
-                              for i in range(len(idx))]
-            trajs['actions'] = [hdf_trajs['actions'][starts[idx[i]]+1:starts[idx[i]+1]+1]
-                              for i in range(len(idx))]
-            reward_arr = [np.sum(trajs['rewards'][i]) for i in range(len(trajs['rewards']))]
-            print(f'expert: {expert_location}, {len(perm)} trajectories')
-            print(f'return: {np.mean(reward_arr)}, max:{np.max(reward_arr)}, min:{np.min(reward_arr)}')
-            print(f'mean episode length: {np.mean(trajs["lengths"])}')
-            return trajs  
+    assert os.path.isfile(expert_location)
     
-        else:
-            with open(expert_location, 'rb') as f:
-                trajs = read_file(expert_location, f)
-            rng = np.random.RandomState(seed)
-            # Sample random `num_trajectories` experts.
-            perm = np.arange(len(trajs["states"]))
-            perm = rng.permutation(perm)
+    with open(expert_location, 'rb') as f:
+        hdf_trajs = read_file(expert_location, f)
+    starts_timeout = np.where(np.array(hdf_trajs['timeouts'])>0)[0].tolist()
+    starts_done = np.where(np.array(hdf_trajs['terminals'])>0)[0].tolist()
+    starts = [-1]+starts_timeout+starts_done
+    starts = list(dict.fromkeys(starts))
+    starts.sort()
+    
+    rng = np.random.RandomState(seed)
+    perm = np.arange(len(starts)-1)
+    perm = rng.permutation(perm)
+    
+    total_length = 0
+    for num_traj in range(len(perm)):
+        total_length += (starts[perm[num_traj]+1]+1) - (starts[perm[num_traj]]+1)
+        if (total_length>=num_trajectories):
+            break
+    num_traj += 1
+    idx = perm[:num_traj]
+    trajs = {}
+    
+    trajs['dones'] = [np.array(hdf_trajs['terminals'][starts[idx[i]]+1:starts[idx[i]+1]+1])
+                        for i in range(len(idx))]
+    trajs['states'] = [np.array(hdf_trajs['observations'][starts[idx[i]]+1:starts[idx[i]+1]+1])
+                        for i in range(len(idx))]
+    trajs['initial_states'] = np.array([hdf_trajs['observations'][starts[idx[i]]+1]
+                        for i in range(len(idx))])
+    trajs['next_states'] = [np.array(hdf_trajs['next_observations'][starts[idx[i]]+1:starts[idx[i]+1]+1])
+                        for i in range(len(idx))]
+    trajs['actions'] = [np.array(hdf_trajs['actions'][starts[idx[i]]+1:starts[idx[i]+1]+1])
+                        for i in range(len(idx))]
+    trajs['rewards'] = [hdf_trajs['rewards'][starts[idx[i]]+1:starts[idx[i]+1]+1]
+                            for i in range(len(idx))]
 
-            idx = perm[:num_trajectories]
-            for k, v in trajs.items():
-                trajs[k] = [v[i] for i in idx]
-
-    else:
-        raise ValueError(f"{expert_location} is not a valid path")
+    trajs['dones'] = np.concatenate(trajs['dones'],axis=0)[:num_trajectories]
+    trajs['states'] = np.concatenate(trajs['states'],axis=0)[:num_trajectories]
+    trajs['actions'] = np.concatenate(trajs['actions'],axis=0)[:num_trajectories]
+    trajs['next_states'] = np.concatenate(trajs['next_states'],axis=0)[:num_trajectories]
+    # if ('Ant-v3' in expert_location):
+    #     trajs['initial_states'] = trajs['initial_states'][:,:27]
+    #     trajs['states'] = trajs['states'][:,:27]
+    #     trajs['next_states'] = trajs['next_states'][:,:27]
+    reward_arr = [np.sum(trajs['rewards'][i]) for i in range(len(trajs['rewards']))]
+    
+    trajs['rewards'] = np.concatenate(trajs['rewards'],axis=0)[:num_trajectories]
+    print(f'expert: {expert_location}, {len(idx)} trajectories')
+    print(f'return: {np.mean(reward_arr)} ± {np.std(reward_arr)}')
     return trajs
 
 
