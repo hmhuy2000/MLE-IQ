@@ -104,10 +104,10 @@ def load_trajectories(expert_location: str,
     trajs['states'] = np.concatenate(trajs['states'],axis=0)[:num_trajectories]
     trajs['actions'] = np.concatenate(trajs['actions'],axis=0)[:num_trajectories]
     trajs['next_states'] = np.concatenate(trajs['next_states'],axis=0)[:num_trajectories]
-    # if ('Ant-v3' in expert_location):
-    #     trajs['initial_states'] = trajs['initial_states'][:,:27]
-    #     trajs['states'] = trajs['states'][:,:27]
-    #     trajs['next_states'] = trajs['next_states'][:,:27]
+    if ('Ant' in expert_location):
+        trajs['initial_states'] = trajs['initial_states'][:,:27]
+        trajs['states'] = trajs['states'][:,:27]
+        trajs['next_states'] = trajs['next_states'][:,:27]
     reward_arr = [np.sum(trajs['rewards'][i]) for i in range(len(trajs['rewards']))]
     
     trajs['rewards'] = np.concatenate(trajs['rewards'],axis=0)[:num_trajectories]

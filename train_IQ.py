@@ -13,6 +13,7 @@ import torch
 import torch.nn.functional as F
 import wandb
 from torch import nn
+from agent.sac_models import normal_ValueFunction
 from omegaconf import DictConfig, OmegaConf
 from tensorboardX import SummaryWriter
 from torch.optim import Adam
@@ -33,7 +34,7 @@ def main(cfg: DictConfig):
     run_name = f'Ours (IQ)'
     for expert_dir,num_expert in zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo):
         run_name += f'-{expert_dir.split(".")[0].split("/")[-1]}({num_expert})'
-    wandb.init(project=f'MLE-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
+    wandb.init(project=f'Final-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
         group='offline',
         job_type=run_name,
         name=f'{args.seed}', entity='hmhuy')
@@ -50,28 +51,81 @@ def main(cfg: DictConfig):
     
     env = make_env(args)
     eval_env = make_env(args)
+
     env.seed(args.seed)
     eval_env.seed(args.seed + 10)
     LEARN_STEPS = int(args.env.learn_steps)
     agent = make_agent(env, args)
 
+    if ('Ant' in args.env.name):
+        obs_dim = 27
+    else:
+        obs_dim = env.observation_space.shape[0]
+
+    reward_function = normal_ValueFunction(obs_dim,
+                                        env.action_space.shape[0],
+                                        args.agent.critic_cfg.hidden_dim,
+                                        args.agent.critic_cfg.hidden_depth,
+                                        args.agent.actor_cfg.log_std_bounds,).to(device)
+    reward_optimizer = Adam(reward_function.parameters(),
+                        lr=args.agent.critic_lr,
+                        betas=args.agent.critic_betas)
     expert_buffer = []
+    obs_arr = []
     for id,(dir,num) in enumerate(zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo)):
         add_memory_replay = Memory(1, args.seed)
-        add_memory_replay.load(hydra.utils.to_absolute_path(f'experts/{dir}'),
+        obs_arr.append(add_memory_replay.load(hydra.utils.to_absolute_path(f'experts/{dir}'),
                                 num_trajs=num,
                                 sample_freq=1,
-                                seed=args.seed)
+                                seed=args.seed))
         expert_buffer.append(add_memory_replay)
         print(f'--> Add memory {id} size: {add_memory_replay.size()}')
-    
+    obs_arr = np.concatenate(obs_arr,axis=0)
+
+    shift = -np.mean(obs_arr, 0)
+    scale = 1.0 / (np.std(obs_arr, 0) + 1e-3)
+    for buffer in expert_buffer:
+        buffer.shift = shift
+        buffer.scale = scale
+
     reward_arr = args.expert.reward_arr
-    print(f'rewards for datasets: {reward_arr}')
+    print(obs_arr.shape)
     
+    print(f'rewards for datasets: {reward_arr}')
+    arr_log_prob = deque(maxlen=1000)
+    for iter in range(int(args.agent.reward_train_step)+1):
+        next_obs = []
+        rewards = []
+        r_arr = []
+        for (buffer,r) in zip(expert_buffer,reward_arr):
+            batch = buffer.get_samples(args.train.batch, device)
+            next_obs.append(batch[1])
+            rewards.append(torch.full_like(batch[3],r))
+            if (iter%1000 == 0):
+                with torch.no_grad():
+                    exp_r,_,_ = reward_function.sample(batch[1])
+                    r_arr.append(exp_r.mean().item())
+        next_obs = torch.cat(next_obs, dim=0)
+        rewards = torch.cat(rewards, dim=0)
+        log_probs = reward_function.get_log_prob(next_obs,rewards)
+        arr_log_prob.append(log_probs.mean().item())
+        loss = -log_probs.mean()
+        reward_optimizer.zero_grad()
+        loss.backward()
+        reward_optimizer.step()
+        if (iter%1000 == 0):
+            with torch.no_grad():
+                print(r_arr)
+                expected_rewards,_,_ = reward_function.sample(next_obs)
+                mse = F.mse_loss(expected_rewards, rewards)
+                print(f'iter = {iter}/{int(args.agent.reward_train_step)}, log_prob = {np.mean(arr_log_prob):.3f},'
+                    +f'mse = {mse:.3f}')
     best_eval_returns = -np.inf
     best_learn_steps = None
     learn_steps = 0
-
+    reward_function.eval()
+    agent.reward_function = reward_function
+    
     for iter in range(LEARN_STEPS):
         info = {}
         if learn_steps == LEARN_STEPS:
@@ -82,7 +136,7 @@ def main(cfg: DictConfig):
         losses = agent.update(expert_buffer, learn_steps)
         info.update(losses)
         if learn_steps % args.env.eval_interval == 0:
-            eval_returns, eval_timesteps = evaluate(agent, eval_env, num_episodes=50)
+            eval_returns, eval_timesteps = evaluate(agent, eval_env,shift,scale,args.env.name, num_episodes=50)
             minimum = np.min(eval_returns)
             maximum = np.max(eval_returns)
             mean_value = np.mean(eval_returns)
@@ -113,7 +167,9 @@ def update_critic(self, add_batches,step):
     args = self.args
     reward_arr = args.expert.reward_arr
     batch = concat_data(add_batches,reward_arr, args)
-    obs, next_obs, action,reward,done =batch
+    obs, next_obs, action,_,done =batch
+    with torch.no_grad():
+        reward,_,_ = self.reward_function.sample(next_obs)
 
     with torch.no_grad():
         next_action, log_prob, _ = self.actor.sample(next_obs)
@@ -165,11 +221,14 @@ def update_critic(self, add_batches,step):
                 pi_Q = (pi_Q1+pi_Q2)/2
                 pi_reward = pi_Q - (1 - b_done) * self.gamma * b_next_target_V
                 
+                target_reward,_,_ = self.reward_function.sample(b_next_obs)
+                
                 loss_dict[f'value/pi_Q_{id}'] = pi_Q.mean().item()
                 loss_dict[f'reward/pi_reward_{id}'] = pi_reward.mean().item()
                 loss_dict[f'log_prob/log_prob_{id}'] = self.actor.get_log_prob(b_obs, b_action).mean().item()
                 loss_dict[f'value/Q_{id}'] = b_Q.mean().item()
                 loss_dict[f'reward/reward_{id}'] = b_reward.mean().item()
+                loss_dict[f'reward/target_reward_{id}'] = target_reward.mean().item()
                 loss_dict[f'reward/reward_dif_{id}'] = (pi_reward - b_reward).mean().item()
                 loss_dict[f'value/Q_dif_{id}'] = (pi_Q - b_Q).mean().item()
         

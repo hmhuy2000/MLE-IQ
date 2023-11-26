@@ -5,6 +5,7 @@ agent:
   _target_: agent.sac.SAC
   obs_dim: ??? # to be specified later
   action_dim: ??? # to be specified later
+  reward_train_step: 30000
 
   critic_cfg: ${q_net}
   actor_cfg: ${diag_gaussian_actor}

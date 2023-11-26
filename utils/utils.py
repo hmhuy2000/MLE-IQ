@@ -22,7 +22,7 @@ class eval_mode(object):
         return False
 
 
-def evaluate(actor, env, num_episodes=100, vis=True):
+def evaluate(actor, env,shift,scale,env_name, num_episodes=100, vis=True):
     """Evaluates the policy.
     Args:
       actor: A policy to evaluate.
@@ -40,6 +40,9 @@ def evaluate(actor, env, num_episodes=100, vis=True):
 
         with eval_mode(actor):
             while not done:
+                if ('Ant' in env_name):
+                    state = state[:27]
+                state = (state + shift) * scale
                 action = actor.choose_action(state, sample=False)
                 next_state, reward, done, info = env.step(action)
                 state = next_state
