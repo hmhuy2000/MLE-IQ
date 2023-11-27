@@ -43,8 +43,11 @@ class Memory(object):
         data = ExpertDataset(path, num_trajs, sample_freq, seed)
         self.memory_size = data.__len__()
         self.buffer = deque(maxlen=self.memory_size)
+        obs_arr = []
         for i in range(len(data)):
             self.add(data[i])
+            obs_arr.append(data[i][0])
+        return np.array(obs_arr)
 
     def get_samples(self, batch_size, device):
         batch = self.sample(batch_size, False)
@@ -55,7 +58,9 @@ class Memory(object):
         batch_state = np.array(batch_state)
         batch_next_state = np.array(batch_next_state)
         batch_action = np.array(batch_action)
-
+        batch_state = (batch_state + self.shift) * self.scale
+        batch_next_state = (batch_next_state + self.shift) * self.scale
+        
         batch_state = torch.as_tensor(batch_state, dtype=torch.float, device=device)
         batch_next_state = torch.as_tensor(batch_next_state, dtype=torch.float, device=device)
         batch_action = torch.as_tensor(batch_action, dtype=torch.float, device=device)
