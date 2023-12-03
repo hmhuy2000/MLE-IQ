@@ -41,6 +41,7 @@ class Memory(object):
         if not (path.endswith("pkl") or path.endswith("hdf5")):
             path += '.npy'
         data = ExpertDataset(path, num_trajs, sample_freq, seed)
+        self.full_trajs = data.full_trajectories
         self.memory_size = data.__len__()
         self.buffer = deque(maxlen=self.memory_size)
         obs_arr = []

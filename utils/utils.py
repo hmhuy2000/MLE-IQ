@@ -32,29 +32,20 @@ def evaluate(actor, env,shift,scale, num_episodes=100, vis=True):
       Averaged reward and a total number of steps.
     """
     total_returns = []
-    total_expected_returns = []
 
     while len(total_returns) < num_episodes:
         state = env.reset()
         done = False
-        total_expected_reward = 0.0
         with eval_mode(actor):
             while not done:
                 state = (state + shift) * scale
                 action = actor.choose_action(state, sample=False)
                 next_state, reward, done, info = env.step(action)
                 state = next_state
-                with torch.no_grad():
-                    Qs = actor.critic(torch.tensor(np.array([state]),dtype=torch.float).to(actor.device), 
-                                      torch.tensor(np.array([action]),dtype=torch.float).to(actor.device))
-                    y_next_V = actor.gamma * actor.get_targetV(torch.tensor(np.array([next_state]),dtype=torch.float).to(actor.device))
-                    total_expected_reward += (Qs - y_next_V).mean().item()
-
                 if 'episode' in info.keys():
                     total_returns.append(info['episode']['r'])
-        total_expected_returns.append(total_expected_reward)
 
-    return total_returns, total_expected_returns
+    return total_returns
 
 
 def weighted_softmax(x, weights):

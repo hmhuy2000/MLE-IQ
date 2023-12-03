@@ -19,7 +19,9 @@ from torch.optim import Adam
 from make_envs import make_env
 from agent import make_agent
 from dataset.memory import Memory
+from dataset.expert_dataset import Full_Traj_dataset
 from utils.utils import eval_mode,evaluate,soft_update,concat_data
+from torch.utils.data import DataLoader
 
 def get_args(cfg: DictConfig):
     cfg.device = "cuda"
@@ -30,14 +32,13 @@ def get_args(cfg: DictConfig):
 def main(cfg: DictConfig):
     args = get_args(cfg)
     
-    run_name = f'Ours'
+    run_name = f'new (Both)'
     for expert_dir,num_expert in zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo):
         if ('v3' in args.env.name):
-            run_name += f'-{expert_dir.split(".")[0].split("/")[-1]}({int(int(num_expert)/1000)}k)'
+            run_name += f'-{expert_dir.split(".")[0].split("/")[-1]}({num_expert})'
         elif ('v2' in args.env.name):
-            run_name += f'-{expert_dir.split("-")[0].split("_")[-1]}({int(int(num_expert)/1000)}k)'
-            
-    wandb.init(project=f'ICML-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
+            run_name += f'-{expert_dir.split("-")[0].split("_")[-1]}({num_expert})'
+    wandb.init(project=f'test2-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
         group='offline',
         job_type=run_name,
         name=f'{args.seed}', entity='hmhuy')
@@ -60,6 +61,16 @@ def main(cfg: DictConfig):
     agent = make_agent(env, args)
     agent.device = device
 
+    from agent.sac_models import RewardFunction
+    reward_function = RewardFunction(obs_dim=env.observation_space.shape[0],
+                                     action_dim=env.action_space.shape[0],
+                                     hidden_dim=args.agent.critic_cfg.hidden_dim,
+                                     hidden_depth=args.agent.critic_cfg.hidden_depth,
+                                     args=args).to(device)
+
+    reward_optimizer = Adam(reward_function.parameters(),
+                                     lr=5e-3)
+
     expert_buffer = []
     obs_arr = []
     for id,(dir,num) in enumerate(zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo)):
@@ -71,15 +82,58 @@ def main(cfg: DictConfig):
         expert_buffer.append(add_memory_replay)
         print(f'--> Add memory {id} size: {add_memory_replay.size()}')
     obs_arr = np.concatenate(obs_arr,axis=0)
-    
     shift = -np.mean(obs_arr, 0)
     scale = 1.0 / (np.std(obs_arr, 0) + 1e-3)
     for buffer in expert_buffer:
         buffer.shift = shift
         buffer.scale = scale
     
-    reward_arr = args.expert.reward_arr
-    print(f'rewards for datasets: {reward_arr}')
+    partial_len = 100
+    traj_dataset = Full_Traj_dataset(states=[expert.full_trajs['states'] for expert in expert_buffer],
+                                     actions=[expert.full_trajs['actions'] for expert in expert_buffer],
+                                     shift=shift,scale=scale,partial_len=partial_len)
+    dataloader = DataLoader(traj_dataset, batch_size=128, shuffle=True)
+    total_iter = 5000
+    for iter in trange(total_iter+1):
+        for batch in dataloader:
+            states_batch, actions_batch, labels_batch = batch
+            states_batch = states_batch.to(device)
+            actions_batch = actions_batch.to(device)
+            labels_batch = labels_batch.to(device)
+            labels_batch = labels_batch.unsqueeze(-1)
+            
+            reward = reward_function(states_batch,actions_batch)
+            reshaped_reward = reward.view(reward.shape[0], 1, partial_len, 1).expand(-1, partial_len, -1, -1)
+            sum_reward = torch.sum(reward.squeeze(-1),dim=-1,keepdim=True)
+            sum_reward = torch.mean(reward.squeeze(-1),dim=-1,keepdim=True)
+            pair_wise_sum = sum_reward - sum_reward.view(sum_reward.shape[1],sum_reward.shape[0])
+            pair_wise_label = (labels_batch - labels_batch.view(labels_batch.shape[1],labels_batch.shape[0])).clamp(min=-1,max=1)
+            max_pair_wise_label = (labels_batch+labels_batch.view(labels_batch.shape[1],labels_batch.shape[0]))
+
+            global_loss = (-max_pair_wise_label*pair_wise_sum*pair_wise_label).exp().mean()
+            local_loss = torch.square(reshaped_reward - reshaped_reward.permute(0, 2, 1, 3)).mean()
+            reward_optimizer.zero_grad()
+            (global_loss+local_loss).backward()
+            reward_optimizer.step()
+        if (iter %1000 ==0):
+            reward_Q1,reward_Q2,reward_Q3,reward_mean = [],[],[],[]
+            for buffer in expert_buffer:
+                obs, _, action,_,_ = buffer.get_samples(5000, device)
+                rewards = reward_function(obs,action).detach().cpu().numpy()
+                reward_Q1.append(int(np.percentile(rewards, 25)*100)/100)
+                reward_Q2.append(int(np.percentile(rewards, 50)*100)/100)
+                reward_Q3.append(int(np.percentile(rewards, 75)*100)/100)
+                reward_mean.append(int(np.mean(rewards)*100)/100)
+            print(f'---iter {iter}/{total_iter}:')
+            print(f'mean: {reward_mean}')
+            print(f'Q1: {reward_Q1}')
+            print(f'Q2: {reward_Q2}')
+            print(f'Q3: {reward_Q3}')
+    
+    reward_arr = reward_mean
+    args.expert.reward_arr = reward_arr
+    print(f'select reward coefs:')
+    print(args.expert.reward_arr)
     
     best_eval_returns = -np.inf
     best_learn_steps = None
@@ -125,6 +179,8 @@ def main(cfg: DictConfig):
 def update_critic(self, add_batches,step):
     args = self.args
     reward_arr = args.expert.reward_arr
+    if (self.first_log):
+        print(f'[reward]: {reward_arr}')
     batch = concat_data(add_batches,reward_arr, args)
     obs, next_obs, action,reward,done =batch
 

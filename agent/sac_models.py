@@ -154,6 +154,33 @@ class SingleQCritic(nn.Module):
         grad_pen = lambda_ * (gradient.norm(2, dim=1) - 1).pow(2).mean()
         return grad_pen
 
+class RewardFunction(nn.Module):
+    def __init__(self, obs_dim, action_dim, hidden_dim, hidden_depth, args):
+        super(RewardFunction, self).__init__()
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+        self.args = args
+
+        # Q architecture
+        self.Q = utils.mlp(obs_dim + action_dim, hidden_dim, 1, hidden_depth)
+
+        self.apply(orthogonal_init_)
+
+    def forward(self, obs, action):
+        assert obs.size(0) == action.size(0)
+
+        obs_action = torch.cat([obs, action], dim=-1)
+        q = self.Q(obs_action)
+        return 0.3 + 2*torch.sigmoid(q)
+    
+    def forward_traj(self, obs, action):
+        assert obs.size(0) == action.size(0)
+        print(obs.shape,action.shape)
+        raise
+
+        obs_action = torch.cat([obs, action], dim=-1)
+        q = self.Q(obs_action)
+        return F.tanh(q)
 
 class DoubleQCriticState(nn.Module):
     def __init__(self, obs_dim, action_dim, hidden_dim, hidden_depth, args):
