@@ -30,7 +30,7 @@ def get_args(cfg: DictConfig):
 def main(cfg: DictConfig):
     args = get_args(cfg)
     
-    run_name = f'Ours'
+    run_name = f'Ours (both)'
     for expert_dir,num_expert in zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo):
         if ('v3' in args.env.name):
             run_name += f'-{expert_dir.split(".")[0].split("/")[-1]}({int(int(num_expert)/1000)}k)'
@@ -143,7 +143,12 @@ def update_critic(self, add_batches,step):
     reward_loss_2 = (-reward * pred_reward_2 + 1/2 * (pred_reward_2**2)).mean()
     reward_loss = (reward_loss_1 + reward_loss_2)/2
     
-    if (args.method.loss=='value'):
+    if (args.method.loss=='strict_value'):
+        if (self.first_log):
+            print('[Critic]: use strict_value loss')
+        value_dif = current_V - y_next_V
+        value_loss = (value_dif + 1/2*value_dif**2).mean()    
+    elif (args.method.loss=='value'):
         if (self.first_log):
             print('[Critic]: use value loss')
         value_loss = (current_V - y_next_V).mean()
@@ -155,7 +160,11 @@ def update_critic(self, add_batches,step):
         raise NotImplementedError
     
     mse_loss = (F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q))/2
-    critic_loss = mse_loss + value_loss + reward_loss
+    critic_loss = (
+        value_loss 
+        + mse_loss
+        + reward_loss
+    )
     loss_dict  ={
         'value/current_V':current_V.mean().item(),
         'loss/critic_loss':critic_loss.item(),

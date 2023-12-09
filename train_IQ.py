@@ -32,8 +32,12 @@ def main(cfg: DictConfig):
     
     run_name = f'Ours (IQ)'
     for expert_dir,num_expert in zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo):
-        run_name += f'-{expert_dir.split(".")[0].split("/")[-1]}({num_expert})'
-    wandb.init(project=f'test-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
+        if ('v3' in args.env.name):
+            run_name += f'-{expert_dir.split(".")[0].split("/")[-1]}({int(int(num_expert)/1000)}k)'
+        elif ('v2' in args.env.name):
+            run_name += f'-{expert_dir.split("-")[0].split("_")[-1]}({int(int(num_expert)/1000)}k)'
+            
+    wandb.init(project=f'ICML-{args.env.name}', settings=wandb.Settings(_disable_stats=True), \
         group='offline',
         job_type=run_name,
         name=f'{args.seed}', entity='hmhuy')
@@ -54,24 +58,31 @@ def main(cfg: DictConfig):
     eval_env.seed(args.seed + 10)
     LEARN_STEPS = int(args.env.learn_steps)
     agent = make_agent(env, args)
+    agent.device = device
 
     expert_buffer = []
-    expert_policy = []
+    obs_arr = []
     for id,(dir,num) in enumerate(zip(args.env.sub_optimal_demo,args.env.num_sub_optimal_demo)):
         add_memory_replay = Memory(1, args.seed)
-        add_memory_replay.load(hydra.utils.to_absolute_path(f'experts/{dir}'),
+        obs_arr.append(add_memory_replay.load(hydra.utils.to_absolute_path(f'experts/{dir}'),
                                 num_trajs=num,
                                 sample_freq=1,
-                                seed=args.seed)
+                                seed=args.seed))
         expert_buffer.append(add_memory_replay)
         print(f'--> Add memory {id} size: {add_memory_replay.size()}')
+    obs_arr = np.concatenate(obs_arr,axis=0)
+    
+    shift = -np.mean(obs_arr, 0)
+    scale = 1.0 / (np.std(obs_arr, 0) + 1e-3)
+    for buffer in expert_buffer:
+        buffer.shift = shift
+        buffer.scale = scale
     
     reward_arr = args.expert.reward_arr
     print(f'rewards for datasets: {reward_arr}')
     
     best_eval_returns = -np.inf
     best_learn_steps = None
-    agent.policy_ls = expert_policy
     learn_steps = 0
 
     for iter in range(LEARN_STEPS):
@@ -84,7 +95,7 @@ def main(cfg: DictConfig):
         losses = agent.update(expert_buffer, learn_steps)
         info.update(losses)
         if learn_steps % args.env.eval_interval == 0:
-            eval_returns, eval_timesteps = evaluate(agent, eval_env, num_episodes=50)
+            eval_returns = evaluate(agent, eval_env,shift,scale, num_episodes=50)
             minimum = np.min(eval_returns)
             maximum = np.max(eval_returns)
             mean_value = np.mean(eval_returns)
@@ -121,6 +132,7 @@ def update_critic(self, add_batches,step):
         next_action, log_prob, _ = self.actor.sample(next_obs)
         target_next_V = self.critic_target(next_obs, next_action)  - self.alpha.detach() * log_prob
         y_next_V = (1 - done) * self.gamma * target_next_V
+        target_Q = reward + y_next_V
     current_Q1,current_Q2 = self.critic(obs, action,both=True)
     current_V = self.getV(obs)
     
@@ -131,7 +143,12 @@ def update_critic(self, add_batches,step):
     reward_loss_2 = (-reward * pred_reward_2 + 1/2 * (pred_reward_2**2)).mean()
     reward_loss = (reward_loss_1 + reward_loss_2)/2
     
-    if (args.method.loss=='value'):
+    if (args.method.loss=='strict_value'):
+        if (self.first_log):
+            print('[Critic]: use strict_value loss')
+        value_dif = current_V - y_next_V
+        value_loss = (value_dif + 1/2*value_dif**2).mean()    
+    elif (args.method.loss=='value'):
         if (self.first_log):
             print('[Critic]: use value loss')
         value_loss = (current_V - y_next_V).mean()
@@ -142,11 +159,16 @@ def update_critic(self, add_batches,step):
     else:
         raise NotImplementedError
     
-    critic_loss = value_loss + reward_loss
+    mse_loss = (F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q))/2
+    critic_loss = (
+        value_loss 
+        + reward_loss*2
+    )
     loss_dict  ={
         'value/current_V':current_V.mean().item(),
         'loss/critic_loss':critic_loss.item(),
         'loss/value_loss':value_loss.item(),
+        'loss/mse_loss':mse_loss.item(),
         'loss/reward_loss':reward_loss.item(),
     }
     if (step%args.env.eval_interval == 0):
